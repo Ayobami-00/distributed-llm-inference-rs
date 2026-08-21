@@ -138,9 +138,20 @@ cargo test -p dlir-runtime --test e2e -- --ignored --nocapture
 That command can download approximately 269 MB for SmolLM2 and 2.2 GB for TinyLlama and may
 require several gigabytes of host memory because runtime weights are F32.
 
-## v0.1 non-goals
+## Release checkpoints
 
-This checkpoint does not implement Metal, CUDA, platform-specific acceleration, quantization,
-continuous batching, multiple prompts, random sampling, Docker orchestration, ranks,
-transport, collectives, tensor parallelism, pipeline parallelism, or expert parallelism.
-Those are later article and implementation checkpoints built on this measurable baseline.
+Each tag is intended to leave the project in a runnable, measurable state that supports one
+checkpoint in the accompanying article. Only tags marked **implemented** currently exist;
+the remaining names describe the planned progression and may be refined as the work develops.
+
+| Tag | Status | What it contains |
+| --- | --- | --- |
+| `v0.1-single` | Implemented | A single CPU process and device; the closed model registry; model inspection and memory planning; an owned Llama forward path; prefill and cached decode; greedy generation; structured events, metrics, and JSON reports. |
+| `v0.2-collectives` | Planned | In-memory ranks, point-to-point send/receive, and correctness-first native collective algorithms tested against single-process tensor results. |
+| `v0.3-tcp` | Planned | One rank per process, TCP transport, rendezvous, process startup, and reproducible multi-container CPU topologies. |
+| `v0.4-pipeline` | Planned | Pipeline-stage model partitioning, rank-local weight loading, activation transfer between stages, and autoregressive token feedback. |
+| `v0.5-tensor` | Planned | Column- and row-parallel linear layers, sharded attention and MLP execution, tensor-parallel collectives, and distributed generation. |
+| `v0.6-hybrid` | Planned | Process groups and combined tensor and pipeline parallelism, including topology-aware memory and communication measurements. |
+| `v0.7-cuda-nccl` | Planned | CUDA execution and an NCCL communicator implementing the same distributed semantics used by the CPU backends. |
+| `v0.8-expert` | Planned | A small mixture-of-experts model, expert placement, top-k token routing, and all-to-all expert-parallel execution. |
+| `v1.0-lab` | Planned | PP-versus-TP experiments, per-rank observability, communication and idle-time metrics, and a terminal UI for comparing distributed inference trade-offs. |
