@@ -1,0 +1,37 @@
+[workspace]
+members = ["crates/runtime", "crates/cli"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT"
+repository = "https://github.com/Ayobami-00/distributed-llm-inference-rs"
+
+[workspace.dependencies]
+anyhow = "1.0"
+candle-core = "=0.11.0"
+candle-nn = "=0.11.0"
+candle-transformers = "=0.11.0"
+clap = { version = "4.5", features = ["derive"] }
+hf-hub = "=0.5.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+safetensors = "=0.8.0"
+thiserror = "2.0"
+tokenizers = "=0.23.1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tempfile = "3.27"
+
+[profile.release]
+codegen-units = 1
+lto = "thin"
+
+[patch.crates-io]
+# Narrow stable-Rust/MSRV compatibility patches over the published 0.11.0
+# sources. Runtime behavior used by dlir remains Candle's CPU/F32 path.
+candle-core = { path = "vendor/candle-core" }
+candle-nn = { path = "vendor/candle-nn" }
+candle-transformers = { path = "vendor/candle-transformers" }

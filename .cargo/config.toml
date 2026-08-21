@@ -1,0 +1,3 @@
+[resolver]
+# Keep transitive dependency selection compatible with the workspace MSRV.
+incompatible-rust-versions = "fallback"
