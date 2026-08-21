@@ -146,7 +146,7 @@ the remaining names describe the planned progression and may be refined as the w
 
 | Tag | Status | What it contains |
 | --- | --- | --- |
-| `v0.1-single` | Implemented | A single CPU process and device; the closed model registry; model inspection and memory planning; an owned Llama forward path; prefill and cached decode; greedy generation; structured events, metrics, and JSON reports. |
+| [`v0.1-single`](https://github.com/Ayobami-00/distributed-llm-inference-rs/tree/v0.1-single) | Released | A single CPU process and device; the closed model registry; model inspection and memory planning; an owned Llama forward path; prefill and cached decode; greedy generation; structured events, metrics, and JSON reports. |
 | `v0.2-collectives` | Planned | In-memory ranks, point-to-point send/receive, and correctness-first native collective algorithms tested against single-process tensor results. |
 | `v0.3-tcp` | Planned | One rank per process, TCP transport, rendezvous, process startup, and reproducible multi-container CPU topologies. |
 | `v0.4-pipeline` | Planned | Pipeline-stage model partitioning, rank-local weight loading, activation transfer between stages, and autoregressive token feedback. |
