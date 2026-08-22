@@ -1,6 +1,7 @@
 use candle_core::{Device, Tensor};
 use dlir_collectives::{
-    CollectivesError, Communicator, DEFAULT_MAX_TENSOR_BYTES, MessageTag, Rank, TcpTransport,
+    AllReduceAlgorithm, CollectiveCommunicator, CollectivesError, Communicator,
+    DEFAULT_MAX_TENSOR_BYTES, MessageTag, NativeCollectives, Rank, ReduceOp, TcpTransport,
     TcpTransportConfig,
 };
 use std::{net::TcpListener, thread, time::Duration};
@@ -232,6 +233,48 @@ fn tcp_receive_and_barrier_use_total_deadlines() {
                 } else {
                     thread::sleep(Duration::from_millis(150));
                 }
+            })
+        })
+        .collect::<Vec<_>>();
+    for handle in handles {
+        handle.join().unwrap();
+    }
+}
+
+#[test]
+fn ring_all_reduce_moves_payloads_larger_than_socket_buffers_without_deadlock() {
+    const ELEMENTS: usize = 4 * 1024 * 1024;
+    let rendezvous_port = free_port();
+    let peer_ports = [free_port(), free_port()];
+    let handles = (0..2)
+        .map(|global_rank| {
+            thread::spawn(move || {
+                let transport = TcpTransport::connect(TcpTransportConfig {
+                    rank: Rank::new(global_rank, 2).unwrap(),
+                    run_id: "tcp-large-ring".to_owned(),
+                    rendezvous_addr: format!("127.0.0.1:{rendezvous_port}"),
+                    rendezvous_bind_addr: (global_rank == 0)
+                        .then(|| format!("127.0.0.1:{rendezvous_port}")),
+                    listen_addr: format!("127.0.0.1:{}", peer_ports[global_rank]),
+                    advertise_addr: format!("127.0.0.1:{}", peer_ports[global_rank]),
+                    startup_timeout: STARTUP_TIMEOUT,
+                    operation_timeout: Duration::from_secs(10),
+                    max_tensor_bytes: DEFAULT_MAX_TENSOR_BYTES,
+                })
+                .unwrap();
+                let input = Tensor::from_vec(
+                    vec![global_rank as f32 + 1.; ELEMENTS],
+                    ELEMENTS,
+                    &Device::Cpu,
+                )
+                .unwrap();
+                let mut native = NativeCollectives::new(Communicator::new(transport));
+                let output = native
+                    .all_reduce(&input, ReduceOp::Sum, AllReduceAlgorithm::Ring)
+                    .unwrap();
+                let values = output.flatten_all().unwrap().to_vec1::<f32>().unwrap();
+                assert_eq!(values.len(), ELEMENTS);
+                assert!(values.iter().all(|value| *value == 3.));
             })
         })
         .collect::<Vec<_>>();

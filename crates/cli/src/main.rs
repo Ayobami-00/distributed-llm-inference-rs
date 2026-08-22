@@ -3,15 +3,19 @@
 //! The binary converts CLI arguments into runtime requests, renders model, inspection, and
 //! point-to-point results, launches Docker rank processes, orchestrates pipeline requests, streams
 //! assistant text and rank events, writes optional JSON reports, and owns exit behavior. Model
-//! execution remains in `dlir-runtime`/`dlir-pipeline`; communication remains in
+//! execution remains in `dlir-runtime`/`dlir-pipeline`/`dlir-tensor`; communication remains in
 //! `dlir-collectives`; terminal reduction remains in `dlir-tui`.
 
+mod benchmark;
 mod launch;
 mod pipeline;
+mod tensor;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
-use dlir_collectives::{P2pReport, run_p2p_ring};
+use dlir_collectives::{
+    AllReduceAlgorithm, CollectiveCheckReport, P2pReport, run_collective_check, run_p2p_ring,
+};
 use dlir_runtime::{
     EventObserver, GenerationRequest, InspectionReport, InspectionRequest, MemoryBudget, ModelSpec,
     PlanDType, RankMemoryPlan, RunEvent, RunEventKind, SupportedModelId, format_bytes, generate,
@@ -25,8 +29,10 @@ use std::{
     time::Duration,
 };
 
+use benchmark::CollectiveBenchRequest;
 use launch::{CpuAmount, LaunchRequest, RankRequest};
 use pipeline::PipelineLaunchRequest;
+use tensor::TensorLaunchRequest;
 
 const P2P_RECEIVE_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -44,6 +50,69 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Check or benchmark native collectives derived from send and receive.
+    Collectives {
+        /// Collective operation to run.
+        #[command(subcommand)]
+        command: CollectivesCommand,
+    },
+    /// Generate one completion with tensor-sharded Llama ranks in Docker.
+    Tensor {
+        /// Exact identifier from `dlir models`.
+        #[arg(long)]
+        model: SupportedModelId,
+        /// Tensor rank and container count; must be 2..=64 and divide model dimensions.
+        #[arg(long)]
+        tp: usize,
+        /// Execution device; v0.5 accepts only cpu.
+        #[arg(long, value_enum, default_value_t)]
+        device: DeviceArg,
+        /// Runtime dtype; v0.5 accepts only f32.
+        #[arg(long, default_value = "f32")]
+        dtype: PlanDType,
+        /// Non-empty user message wrapped in the registered chat template.
+        #[arg(long)]
+        prompt: String,
+        /// Maximum generated non-EOS tokens.
+        #[arg(long, default_value_t = 32)]
+        max_new_tokens: usize,
+        /// Total CPU quota divided equally across tensor ranks.
+        #[arg(long)]
+        total_cpus: CpuAmount,
+        /// Total enforced memory divided equally across tensor ranks.
+        #[arg(long)]
+        total_memory: String,
+        /// Native all-reduce algorithm used inside embeddings and every block.
+        #[arg(long, value_enum, default_value_t)]
+        all_reduce: AllReduceArg,
+        /// Display the read-only tensor-parallel dashboard on stderr.
+        #[arg(long)]
+        tui: bool,
+        /// Write the complete schema-v1 report.
+        #[arg(long)]
+        report: Option<PathBuf>,
+        /// Docker image to reuse or build.
+        #[arg(long, default_value = "dlir:v0.5-tensor")]
+        image: String,
+        /// Directory containing the Dockerfile and workspace.
+        #[arg(long, default_value = ".")]
+        build_context: PathBuf,
+        /// Force a no-cache image rebuild.
+        #[arg(long)]
+        rebuild: bool,
+        /// Stable run identifier; generated when omitted.
+        #[arg(long)]
+        run_id: Option<String>,
+        /// Artifact and topology startup deadline.
+        #[arg(long, default_value_t = 30)]
+        startup_timeout_seconds: u64,
+        /// Collective/control/barrier receive deadline.
+        #[arg(long, default_value_t = 30)]
+        operation_timeout_seconds: u64,
+        /// Retain stopped resources and request manifest.
+        #[arg(long)]
+        keep_containers: bool,
+    },
     /// Generate one completion across CPU pipeline stages in Docker containers.
     Pipeline {
         /// Exact identifier from `dlir models`; arbitrary Hub IDs are rejected.
@@ -142,6 +211,12 @@ enum Command {
         /// Read-only pipeline request manifest, required by the pipeline workload.
         #[arg(long, required_if_eq("workload", "pipeline"))]
         pipeline_manifest: Option<PathBuf>,
+        /// Read-only tensor request manifest, required by the tensor workload.
+        #[arg(long, required_if_eq("workload", "tensor"))]
+        tensor_manifest: Option<PathBuf>,
+        /// Read-only collective benchmark manifest.
+        #[arg(long, required_if_eq("workload", "collective-benchmark"))]
+        benchmark_manifest: Option<PathBuf>,
         /// Zero-based global rank.
         #[arg(long)]
         rank: usize,
@@ -238,6 +313,73 @@ enum Command {
     },
 }
 
+#[derive(Debug, Subcommand)]
+enum CollectivesCommand {
+    /// Verify all six native collectives over deterministic in-memory tensors.
+    Check {
+        /// Number of logical ranks; must be at least two.
+        #[arg(long, default_value_t = 4)]
+        world_size: usize,
+        /// Render human-readable text or schema-v1 JSON.
+        #[arg(long, value_enum, default_value_t)]
+        format: OutputFormat,
+        /// Write output to a file instead of stdout.
+        #[arg(long)]
+        output: Option<PathBuf>,
+    },
+    /// Benchmark native all-reduce over reproducible Docker/TCP rank processes.
+    Bench {
+        /// Rank count.
+        #[arg(long)]
+        nproc: usize,
+        /// Total Docker CPU budget divided and enforced across ranks.
+        #[arg(long)]
+        total_cpus: CpuAmount,
+        /// Total Docker memory budget divided and enforced across ranks.
+        #[arg(long)]
+        total_memory: String,
+        /// Algorithms to benchmark.
+        #[arg(long, value_enum, default_value_t)]
+        all_reduce: AllReduceSelection,
+        /// Comma-separated IEC payload sizes.
+        #[arg(long, default_value = "4KiB,64KiB,1MiB,16MiB")]
+        sizes: String,
+        /// Discarded iterations per case.
+        #[arg(long, default_value_t = 2)]
+        warmup: usize,
+        /// Measured iterations per case.
+        #[arg(long, default_value_t = 10)]
+        iterations: usize,
+        /// Text or schema-v1 JSON.
+        #[arg(long, value_enum, default_value_t)]
+        format: OutputFormat,
+        /// Write output to a file instead of stdout.
+        #[arg(long)]
+        output: Option<PathBuf>,
+        /// Docker image to reuse or build.
+        #[arg(long, default_value = "dlir:v0.5-tensor")]
+        image: String,
+        /// Directory containing the Dockerfile and workspace.
+        #[arg(long, default_value = ".")]
+        build_context: PathBuf,
+        /// Force a no-cache image rebuild.
+        #[arg(long)]
+        rebuild: bool,
+        /// Stable run identity; generated when omitted.
+        #[arg(long)]
+        run_id: Option<String>,
+        /// Rendezvous and connection deadline.
+        #[arg(long, default_value_t = 30)]
+        startup_timeout_seconds: u64,
+        /// Collective and barrier receive deadline.
+        #[arg(long, default_value_t = 30)]
+        operation_timeout_seconds: u64,
+        /// Retain stopped containers and network.
+        #[arg(long)]
+        keep_containers: bool,
+    },
+}
+
 #[derive(Debug, Clone, Copy, Default, ValueEnum)]
 enum OutputFormat {
     #[default]
@@ -256,10 +398,122 @@ enum RankWorkloadArg {
     #[default]
     Topology,
     Pipeline,
+    Tensor,
+    CollectiveBenchmark,
+}
+
+#[derive(Debug, Clone, Copy, Default, ValueEnum)]
+enum AllReduceArg {
+    Centralized,
+    #[default]
+    Ring,
+}
+
+#[derive(Debug, Clone, Copy, Default, ValueEnum)]
+enum AllReduceSelection {
+    Centralized,
+    Ring,
+    #[default]
+    Both,
+}
+
+impl From<AllReduceArg> for dlir_collectives::AllReduceAlgorithm {
+    fn from(value: AllReduceArg) -> Self {
+        match value {
+            AllReduceArg::Centralized => Self::Centralized,
+            AllReduceArg::Ring => Self::Ring,
+        }
+    }
 }
 
 fn main() -> Result<()> {
     match Cli::parse().command {
+        Command::Collectives { command } => match command {
+            CollectivesCommand::Check {
+                world_size,
+                format,
+                output,
+            } => run_collectives_check(world_size, format, output.as_deref()),
+            CollectivesCommand::Bench {
+                nproc,
+                total_cpus,
+                total_memory,
+                all_reduce,
+                sizes,
+                warmup,
+                iterations,
+                format,
+                output,
+                image,
+                build_context,
+                rebuild,
+                run_id,
+                startup_timeout_seconds,
+                operation_timeout_seconds,
+                keep_containers,
+            } => benchmark::run_collective_bench(CollectiveBenchRequest {
+                nproc,
+                total_cpus,
+                total_memory,
+                algorithms: match all_reduce {
+                    AllReduceSelection::Centralized => vec![AllReduceAlgorithm::Centralized],
+                    AllReduceSelection::Ring => vec![AllReduceAlgorithm::Ring],
+                    AllReduceSelection::Both => {
+                        vec![AllReduceAlgorithm::Centralized, AllReduceAlgorithm::Ring]
+                    }
+                },
+                sizes,
+                warmup,
+                iterations,
+                json: matches!(format, OutputFormat::Json),
+                output,
+                image,
+                build_context,
+                rebuild,
+                run_id,
+                startup_timeout: Duration::from_secs(startup_timeout_seconds),
+                operation_timeout: Duration::from_secs(operation_timeout_seconds),
+                keep_containers,
+            }),
+        },
+        Command::Tensor {
+            model,
+            tp,
+            device: DeviceArg::Cpu,
+            dtype,
+            prompt,
+            max_new_tokens,
+            total_cpus,
+            total_memory,
+            all_reduce,
+            tui,
+            report,
+            image,
+            build_context,
+            rebuild,
+            run_id,
+            startup_timeout_seconds,
+            operation_timeout_seconds,
+            keep_containers,
+        } => tensor::run_tensor(TensorLaunchRequest {
+            model,
+            tp,
+            dtype,
+            prompt,
+            max_new_tokens,
+            total_cpus,
+            total_memory,
+            all_reduce: all_reduce.into(),
+            tui,
+            report,
+            image,
+            build_context,
+            rebuild,
+            run_id,
+            startup_timeout: Duration::from_secs(startup_timeout_seconds),
+            operation_timeout: Duration::from_secs(operation_timeout_seconds),
+            keep_containers,
+        }),
         Command::Pipeline {
             model,
             device: DeviceArg::Cpu,
@@ -324,6 +578,8 @@ fn main() -> Result<()> {
         Command::Rank {
             workload,
             pipeline_manifest,
+            tensor_manifest,
+            benchmark_manifest,
             rank,
             world_size,
             run_id,
@@ -357,6 +613,20 @@ fn main() -> Result<()> {
                         .as_deref()
                         .context("--pipeline-manifest is required for pipeline ranks")?,
                 ),
+                RankWorkloadArg::Tensor => tensor::run_tensor_rank_process(
+                    rank_request,
+                    tensor_manifest
+                        .as_deref()
+                        .context("--tensor-manifest is required for tensor ranks")?,
+                ),
+                RankWorkloadArg::CollectiveBenchmark => {
+                    benchmark::run_collective_benchmark_rank_process(
+                        rank_request,
+                        benchmark_manifest.as_deref().context(
+                            "--benchmark-manifest is required for collective benchmark ranks",
+                        )?,
+                    )
+                }
             }
         }
         Command::P2p { world_size, format } => run_p2p(world_size, format),
@@ -397,6 +667,57 @@ fn main() -> Result<()> {
             report.as_deref(),
         ),
     }
+}
+
+fn run_collectives_check(
+    world_size: usize,
+    format: OutputFormat,
+    output: Option<&Path>,
+) -> Result<()> {
+    if world_size < 2 {
+        anyhow::bail!("collective correctness checks require at least two ranks");
+    }
+    let report = run_collective_check(world_size, P2P_RECEIVE_TIMEOUT)?;
+    let rendered = match format {
+        OutputFormat::Text => collective_check_text(&report),
+        OutputFormat::Json => format!("{}\n", serde_json::to_string_pretty(&report)?),
+    };
+    if let Some(path) = output {
+        fs::write(path, rendered)?;
+    } else {
+        print!("{rendered}");
+    }
+    if !report.success {
+        anyhow::bail!("native collective correctness check failed");
+    }
+    Ok(())
+}
+
+fn collective_check_text(report: &CollectiveCheckReport) -> String {
+    let mut text = format!(
+        "NATIVE COLLECTIVE CHECK\nBackend:    {}/{}\nWorld size: {}\n\n",
+        report.collective_backend, report.backend, report.world_size
+    );
+    for rank in &report.ranks {
+        text.push_str(&format!("rank {}\n", rank.rank));
+        for operation in &rank.operations {
+            let algorithm = operation
+                .algorithm
+                .map(|value| format!("/{value:?}"))
+                .unwrap_or_default();
+            text.push_str(&format!(
+                "  {:?}{}: {}\n",
+                operation.kind,
+                algorithm,
+                if operation.passed { "PASS" } else { "FAIL" }
+            ));
+        }
+    }
+    text.push_str(&format!(
+        "\nResult: {}\n",
+        if report.success { "PASS" } else { "FAIL" }
+    ));
+    text
 }
 
 fn run_p2p(world_size: usize, format: OutputFormat) -> Result<()> {

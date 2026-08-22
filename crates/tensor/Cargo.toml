@@ -1,5 +1,5 @@
 [package]
-name = "dlir-runtime"
+name = "dlir-tensor"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,14 +10,9 @@ repository.workspace = true
 candle-core.workspace = true
 candle-nn.workspace = true
 dlir-collectives = { path = "../collectives" }
-hf-hub.workspace = true
+dlir-runtime = { path = "../runtime" }
+dlir-pipeline = { path = "../pipeline" }
 serde.workspace = true
 serde_json.workspace = true
-safetensors.workspace = true
 thiserror.workspace = true
 tokenizers.workspace = true
-tracing.workspace = true
-
-[dev-dependencies]
-candle-transformers.workspace = true
-tempfile.workspace = true

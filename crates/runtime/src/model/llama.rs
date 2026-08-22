@@ -32,13 +32,18 @@ impl LayerObserver for NoopLayerObserver {
 }
 
 #[derive(Debug)]
-struct RotaryEmbedding {
+pub(super) struct RotaryEmbedding {
     cos: Tensor,
     sin: Tensor,
 }
 
 impl RotaryEmbedding {
-    fn new(config: &ModelConfig, capacity: usize, dtype: DType, device: &Device) -> Result<Self> {
+    pub(super) fn new(
+        config: &ModelConfig,
+        capacity: usize,
+        dtype: DType,
+        device: &Device,
+    ) -> Result<Self> {
         let head_dim = config.head_dim()?;
         let inverse_frequency: Vec<f32> = (0..head_dim)
             .step_by(2)
@@ -55,7 +60,7 @@ impl RotaryEmbedding {
         })
     }
 
-    fn apply(&self, tensor: &Tensor, position: usize) -> Result<Tensor> {
+    pub(super) fn apply(&self, tensor: &Tensor, position: usize) -> Result<Tensor> {
         let sequence = tensor.dim(2)?;
         let cos = self.cos.narrow(0, position, sequence)?;
         let sin = self.sin.narrow(0, position, sequence)?;
@@ -147,7 +152,7 @@ impl CausalSelfAttention {
     }
 }
 
-fn repeat_kv(tensor: &Tensor, repetitions: usize) -> Result<Tensor> {
+pub(super) fn repeat_kv(tensor: &Tensor, repetitions: usize) -> Result<Tensor> {
     if repetitions == 1 {
         return Ok(tensor.clone());
     }
@@ -158,7 +163,11 @@ fn repeat_kv(tensor: &Tensor, repetitions: usize) -> Result<Tensor> {
         .reshape((batch, kv_heads * repetitions, sequence, head_dim))?)
 }
 
-fn apply_causal_mask(scores: &Tensor, position: usize, sequence: usize) -> Result<Tensor> {
+pub(super) fn apply_causal_mask(
+    scores: &Tensor,
+    position: usize,
+    sequence: usize,
+) -> Result<Tensor> {
     let key_length = position + sequence;
     let mut values = Vec::with_capacity(sequence * key_length);
     for query in 0..sequence {

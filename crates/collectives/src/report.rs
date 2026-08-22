@@ -19,7 +19,8 @@ pub struct TensorSummary {
 }
 
 impl TensorSummary {
-    fn from_tensor(tensor: &Tensor) -> Result<Self> {
+    /// Copies a CPU/F32 tensor into a serializable shape/value summary.
+    pub fn from_tensor(tensor: &Tensor) -> Result<Self> {
         let packet = crate::TensorPacket::from_tensor(tensor)?;
         Ok(Self {
             dtype: "f32".to_owned(),

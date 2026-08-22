@@ -40,14 +40,14 @@ jobs:
           toolchain: "1.85"
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --locked -p dlir-cli
-      - run: docker build --tag dlir:v0.4-pipeline .
+      - run: docker build --tag dlir:v0.5-tensor .
       - name: Launch two constrained TCP ranks
         run: |
           ./target/debug/dlir launch \
             --nproc 2 \
             --total-cpus 1 \
             --total-memory 512MiB \
-            --image dlir:v0.4-pipeline \
+            --image dlir:v0.5-tensor \
             --run-id ci-${{ github.run_id }}-${{ github.run_attempt }} \
             --format json > /tmp/dlir-v0.3-report.json
           jq -e '
@@ -60,7 +60,32 @@ jobs:
             ([.ranks[].report.startup_barrier] | all) and
             ([.ranks[].report.completion_barrier] | all)
           ' /tmp/dlir-v0.3-report.json
+      - name: Benchmark two TCP all-reduce ranks
+        run: |
+          ./target/debug/dlir collectives bench \
+            --nproc 2 \
+            --total-cpus 1 \
+            --total-memory 512MiB \
+            --sizes 4KiB,64KiB \
+            --warmup 1 \
+            --iterations 2 \
+            --image dlir:v0.5-tensor \
+            --run-id bench-${{ github.run_id }}-${{ github.run_attempt }} \
+            --format json \
+            --output /tmp/dlir-v0.5-benchmark.json
+          jq -e '
+            .success == true and
+            .backend == "tcp" and
+            .world_size == 2 and
+            .resources.per_rank_cpu_millis == 500 and
+            .resources.per_rank_memory_bytes == 268435456 and
+            (.cases | length) == 4 and
+            ([.cases[].mean_latency_ns] | all(. > 0)) and
+            ([.cases[].observed_wire_bytes] | all(. > 0))
+          ' /tmp/dlir-v0.5-benchmark.json
       - name: Verify scoped Docker cleanup
         run: |
           test -z "$(docker ps --all --quiet --filter label=io.dlir.run_id=ci-${{ github.run_id }}-${{ github.run_attempt }})"
           test -z "$(docker network ls --quiet --filter label=io.dlir.run_id=ci-${{ github.run_id }}-${{ github.run_attempt }})"
+          test -z "$(docker ps --all --quiet --filter label=io.dlir.run_id=bench-${{ github.run_id }}-${{ github.run_attempt }})"
+          test -z "$(docker network ls --quiet --filter label=io.dlir.run_id=bench-${{ github.run_id }}-${{ github.run_attempt }})"

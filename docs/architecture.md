@@ -6,7 +6,8 @@ separate communication path with logical ranks; `v0.3-tcp` gives each rank its o
 Docker container. Neither checkpoint distributes model execution.
 `v0.4-pipeline` connects the previously separate model and communication paths: every physical
 rank owns a contiguous slice of transformer layers and participates in the same autoregressive
-request.
+request. `v0.5-tensor` instead makes every rank execute every layer while owning strict equal
+matrix, attention-head, vocabulary, and KV-cache shards.
 
 ```text
 world_size = 1
@@ -39,6 +40,7 @@ flowchart LR
     CLI --> Runtime[dlir-runtime]
     CLI --> Collectives[dlir-collectives]
     CLI --> Pipeline[dlir-pipeline]
+    CLI --> Tensor[dlir-tensor]
     CLI --> TUI[dlir-tui]
     CLI --> Docker[Docker CLI and cgroups]
     Collectives --> Channels[Rank-pair FIFO channels]
@@ -50,14 +52,19 @@ flowchart LR
     Runtime --> Reports[Events and reports]
     Pipeline --> Runtime
     Pipeline --> Collectives
+    Tensor --> Runtime
+    Tensor --> Collectives
     TUI --> Pipeline
+    TUI --> Tensor
     Artifacts --> Hub[Hugging Face cache]
     Model --> Candle
 ```
 
-`dlir-cli` owns host/container lifecycle and depends on the four first-party libraries. The
+`dlir-cli` owns host/container lifecycle and depends on the five first-party libraries. The
 pipeline crate composes runtime stages with transport capabilities but knows nothing about Docker
-or terminals. The TUI depends only on event/report types and cannot control execution.
+or terminals. The tensor crate composes TP planning, rank execution, and reports with the same
+runtime and transport boundaries. The TUI depends only on event/report types and cannot control
+execution.
 
 ## First-party module map
 
@@ -66,12 +73,16 @@ or terminals. The TUI depends only on event/report types and cannot control exec
 | [`cli/main.rs`](../crates/cli/src/main.rs) | Parse arguments; render text/JSON; stream completion | Interface boundary, stdout/stderr |
 | [`cli/launch.rs`](../crates/cli/src/launch.rs) | Plan resources and manage Docker rank processes | Container lifecycle, cgroups |
 | [`cli/pipeline.rs`](../crates/cli/src/pipeline.rs) | Preflight artifacts/stages; launch ranks; aggregate JSONL | Distributed generation lifecycle |
+| [`cli/tensor.rs`](../crates/cli/src/tensor.rs) | Preflight shards; launch TP ranks; aggregate events | Tensor generation lifecycle |
+| [`cli/benchmark.rs`](../crates/cli/src/benchmark.rs) | Launch and aggregate Docker/TCP benchmarks | Physical collective measurements |
 | [`collectives/lib.rs`](../crates/collectives/src/lib.rs) | Export the p2p API | Rank and transport boundary |
 | [`collectives/in_memory.rs`](../crates/collectives/src/in_memory.rs) | Connect rank pairs with channels | FIFO messages, tags, timeouts |
 | [`collectives/tcp.rs`](../crates/collectives/src/tcp.rs) | Rendezvous and connect rank processes | TCP framing, peer mesh, barrier |
 | [`collectives/control.rs`](../crates/collectives/src/control.rs) | Bound owned non-tensor messages | Token feedback, decisions |
 | [`collectives/tensor.rs`](../crates/collectives/src/tensor.rs) | Copy tensors into owned packets | Dtype, shape, values |
 | [`collectives/runner.rs`](../crates/collectives/src/runner.rs) | Run and join rank workers | Thread ownership, failure propagation |
+| [`collectives/collective.rs`](../crates/collectives/src/collective.rs) | Derive native collectives from send/recv | Centralized and ring algorithms |
+| [`collectives/benchmark.rs`](../crates/collectives/src/benchmark.rs) | Run and aggregate synchronized measurements | Maximum-rank latency, wire bytes |
 | [`registry.rs`](../crates/runtime/src/registry.rs) | Describe the only accepted models | Reproducibility, architecture contract |
 | [`artifacts.rs`](../crates/runtime/src/artifacts.rs) | Resolve and validate Hub files | Staged loading, trust boundary |
 | [`prompt.rs`](../crates/runtime/src/prompt.rs) | Render fixed chat templates | Prompt representation, special tokens |
@@ -86,6 +97,9 @@ or terminals. The TUI depends only on event/report types and cannot control exec
 | [`pipeline/runner.rs`](../crates/pipeline/src/runner.rs) | Execute the transport-generic stage state machine | Activations, token feedback |
 | [`pipeline/event.rs`](../crates/pipeline/src/event.rs) | Publish rank-local sequenced events | JSONL observation contract |
 | [`pipeline/report.rs`](../crates/pipeline/src/report.rs) | Describe manifests and distributed reports | Schema-v1 aggregation |
+| [`tensor/plan.rs`](../crates/tensor/src/plan.rs) | Validate equal shards and local memory | TP/GQA divisibility, placement |
+| [`tensor/runner.rs`](../crates/tensor/src/runner.rs) | Execute the transport-generic TP state machine | Layer collectives, token decisions |
+| [`tensor/report.rs`](../crates/tensor/src/report.rs) | Describe TP manifests and reports | Schema-v1 rank/event aggregation |
 | [`tui/lib.rs`](../crates/tui/src/lib.rs) | Reduce events and render Ratatui frames | Read-only visualization |
 
 ## Point-to-point flow
@@ -190,6 +204,38 @@ feeds text progress, the report, and the optional TUI. See
 [Pipeline partitioning and execution](pipeline-parallelism.md) and
 [Distributed events and the observational TUI](events-and-tui.md).
 
+## Tensor-parallel Docker flow
+
+```mermaid
+sequenceDiagram
+    participant C as dlir-cli host
+    participant D as Docker Engine
+    participant R0 as tensor rank 0
+    participant RN as tensor rank N
+
+    C->>C: tokenize, validate TP, and plan every shard
+    C->>C: resolve and validate checkpoint once
+    C->>D: start constrained ranks with read-only manifest
+    R0->>RN: rendezvous, full mesh, and startup barrier
+    loop prefill and cached decode
+        R0->>R0: local embedding and transformer shards
+        RN->>RN: local embedding and transformer shards
+        R0->>RN: attention and MLP all-reduce traffic
+        RN->>R0: attention and MLP all-reduce traffic
+        R0->>RN: vocabulary all-gather traffic
+        R0->>RN: typed token decision
+    end
+    R0->>RN: completion barrier
+    R0-->>C: sequenced events and rank result
+    RN-->>C: sequenced events and rank result
+    C->>D: scoped cleanup
+```
+
+All ranks execute the same layers and token steps, but mmap and materialize only their assigned
+checkpoint slices. Collective observers publish start/completion records around the exact native
+operations. The host validates one event sequence per rank and sends the same records to text
+progress, the schema-v1 report, and the optional TUI.
+
 ## Inspection flow
 
 Inspection deliberately stops before artifacts or tensors:
@@ -275,7 +321,7 @@ The implementation defends these properties at module boundaries:
 - Cache capacity never exceeds the registered model context.
 - Checkpoint tensors must exactly match the expected manifest.
 - Only the final sequence position is projected to next-token logits.
-- Single-process generation events identify rank 0; pipeline events identify their physical rank
+- Single-process generation events identify rank 0; distributed events identify their physical rank
   and preserve independent rank-local sequence numbers.
 - JSON report shapes are versioned independently of human text output.
 - A communication rank belongs to exactly one validated world.
@@ -291,6 +337,10 @@ The implementation defends these properties at module boundaries:
   and selects the greedy token.
 - Pipeline activations have shape `[1,S,H]` for prefill and `[1,1,H]` for decode.
 - Tensor and control frames occupy distinct protocol-v2 kinds and tag namespaces.
+- Tensor-parallel vocabulary, hidden, intermediate, query-head, and KV-head dimensions divide
+  evenly by TP before any rank starts.
+- Every tensor rank executes every layer, stores only `K/TP` KV heads, and reaches collectives in
+  the same sequence.
 - The TUI consumes events but owns no transport, Docker, or rank lifecycle capability.
 
 These invariants turn accidental mismatches into explicit errors close to their source. Unit tests

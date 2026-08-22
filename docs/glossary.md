@@ -1,5 +1,22 @@
 # Glossary
 
+## All-gather
+
+A collective in which every rank contributes a distinct shard and every rank receives the
+rank-ordered concatenation. Tensor-parallel generation uses it to reconstruct vocabulary logits.
+
+## All-reduce
+
+A collective that elementwise-reduces equal tensors and returns the complete result to every
+rank. The native centralized implementation reduces on rank 0 then broadcasts; the ring
+implementation combines reduce-scatter and all-gather.
+
+## Collective
+
+An operation in which every rank in a communication group participates in the same sequence.
+The v0.5 native backend derives broadcast, reduce, all-gather, reduce-scatter, all-to-all, and
+all-reduce solely from point-to-point send/receive.
+
 ## Activation
 
 The intermediate residual hidden-state tensor crossing from one pipeline stage to the next.
@@ -62,7 +79,7 @@ packets for final-stage token feedback and rank-0 continue/stop decisions.
 ## Dtype
 
 The numeric representation of tensor elements. F32 uses four bytes; F16 and BF16 use two.
-Generation through v0.4 is validated for CPU/F32.
+Generation through v0.5 is validated for CPU/F32.
 
 ## EOS
 
@@ -134,8 +151,8 @@ the first generated token.
 
 One participant in distributed execution. In the v0.2 communication path, each rank is hosted by
 one worker thread. From v0.3 onward each physical rank owns one process inside one Docker
-container. In v0.4, every rank executes a model stage while rank 0 additionally owns prompt/token
-input and completion emission.
+container. In v0.4 every rank executes one pipeline stage. In v0.5 every tensor rank executes all
+layers on a local shard, while rank 0 additionally owns token decisions and completion emission.
 
 ## Rendezvous
 
@@ -186,6 +203,12 @@ does not preserve application message boundaries.
 The boundary that moves owned tagged messages between ranks. v0.2 provides in-memory tensor
 channels; v0.3 adds full-mesh TCP; protocol v2 in v0.4 adds a separate bounded control-frame kind
 without weakening source/tag matching.
+
+## Tensor parallelism (TP)
+
+Sharding matrix dimensions and attention heads so every rank executes every transformer layer on
+different slices. Partial row-parallel outputs are summed with all-reduce. In v0.5 TP is strict,
+equal, CPU/F32, and identical to the Docker/TCP world size.
 
 ## TUI
 

@@ -75,6 +75,8 @@ pub enum ExecutionPhase {
 pub enum TensorPurpose {
     /// Residual-stream activations passed to the next pipeline stage.
     Activation,
+    /// Tensor-parallel model shard participating in a native collective.
+    TensorParallelShard,
 }
 
 /// Purpose assigned to a bounded pipeline control transfer.
@@ -85,6 +87,8 @@ pub enum ControlPurpose {
     TokenFeedback,
     /// Rank-0 continue/stop decision broadcast to the other stages.
     Decision,
+    /// Rank-0 greedy token and continuation decision for tensor ranks.
+    TensorDecision,
 }
 
 /// Collective operation represented in the shared event vocabulary.
@@ -93,6 +97,18 @@ pub enum ControlPurpose {
 pub enum CollectiveKind {
     /// Reusable centralized rank barrier.
     Barrier,
+    /// Root-to-world tensor broadcast.
+    Broadcast,
+    /// Root reduction.
+    Reduce,
+    /// Rank-ordered shard gathering.
+    AllGather,
+    /// Reduction followed by result distribution.
+    AllReduce,
+    /// Reduction followed by equal result scattering.
+    ReduceScatter,
+    /// Pairwise shard exchange.
+    AllToAll,
 }
 
 /// Payload of one event in the ordered runtime timeline.
@@ -141,6 +157,30 @@ pub enum RunEventKind {
         /// Reusable collective generation.
         generation: u64,
         /// Rank-local collective duration.
+        duration_ns: u64,
+    },
+    /// One tensor-parallel native collective is about to execute.
+    TensorCollectiveStarted {
+        /// Collective name.
+        collective: String,
+        /// Concrete native algorithm.
+        algorithm: String,
+        /// Rank-local collective sequence.
+        collective_sequence: u64,
+        /// Local input shape.
+        shape: Vec<usize>,
+    },
+    /// One tensor-parallel native collective completed.
+    TensorCollectiveCompleted {
+        /// Collective name.
+        collective: String,
+        /// Rank-local collective sequence.
+        collective_sequence: u64,
+        /// Logical F32 bytes sent by this rank.
+        sent_bytes: u64,
+        /// Logical F32 bytes received by this rank.
+        received_bytes: u64,
+        /// Rank-local operation duration.
         duration_ns: u64,
     },
     /// A tensor was copied and sent to another rank.

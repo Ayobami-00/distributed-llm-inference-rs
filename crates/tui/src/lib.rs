@@ -1,4 +1,4 @@
-//! Read-only Ratatui projection over distributed pipeline events.
+//! Read-only Ratatui projection over distributed pipeline and tensor events.
 //!
 //! This crate cannot launch, stop, retry, or reconfigure ranks. It reduces event records into a
 //! dashboard state and renders that state until the producer reports completion or the user
@@ -81,8 +81,18 @@ pub struct DashboardState {
     pub model: String,
     /// Transport backend.
     pub backend: String,
-    /// Pipeline/world size.
+    /// Physical world size.
     pub world_size: usize,
+    /// Tensor-parallel group size.
+    pub tensor_parallel: usize,
+    /// Pipeline-parallel group size.
+    pub pipeline_parallel: usize,
+    /// Expert-parallel group size.
+    pub expert_parallel: usize,
+    /// Selected native all-reduce, when TP is active.
+    pub all_reduce: Option<String>,
+    /// Rank assignment column heading.
+    pub assignment_label: String,
     /// Rank-ordered rows.
     pub ranks: Vec<RankView>,
     /// Rank-0 prefill duration when complete.
@@ -130,6 +140,65 @@ impl DashboardState {
             model: model.into(),
             backend: "tcp".to_owned(),
             world_size: assignments.len(),
+            tensor_parallel: 1,
+            pipeline_parallel: assignments.len(),
+            expert_parallel: 1,
+            all_reduce: None,
+            assignment_label: "Layers".to_owned(),
+            ranks,
+            prefill_ns: None,
+            decode_ns: None,
+            time_to_first_token_ns: None,
+            communication_bytes: 0,
+            generated_tokens: 0,
+            recent: Vec::new(),
+            decode_total_ns: 0,
+            decode_count: 0,
+            prefill_started_ns: None,
+        }
+    }
+
+    /// Creates a read-only tensor-parallel dashboard from exact rank shard plans.
+    pub fn new_tensor(
+        model: impl Into<String>,
+        memory: &[dlir_tensor::TensorParallelMemoryPlan],
+        all_reduce: impl Into<String>,
+    ) -> Self {
+        let ranks = memory
+            .iter()
+            .map(|memory| RankView {
+                rank: memory.rank,
+                layers: format!(
+                    "V{}..{} Q{}..{} K{}..{} I{}..{}",
+                    memory.shard.vocabulary.start,
+                    memory.shard.vocabulary.end,
+                    memory.shard.query_heads.start,
+                    memory.shard.query_heads.end,
+                    memory.shard.kv_heads.start,
+                    memory.shard.kv_heads.end,
+                    memory.shard.intermediate.start,
+                    memory.shard.intermediate.end,
+                ),
+                phase: "startup".to_owned(),
+                layer: None,
+                state: "WAITING".to_owned(),
+                compute_ns: 0,
+                communication_ns: 0,
+                logical_memory_bytes: memory.persistent_bytes,
+                memory_current_bytes: None,
+                memory_limit_bytes: memory.budget_bytes,
+                phase_started_ns: None,
+            })
+            .collect::<Vec<_>>();
+        Self {
+            model: model.into(),
+            backend: "native/tcp".to_owned(),
+            world_size: memory.len(),
+            tensor_parallel: memory.len(),
+            pipeline_parallel: 1,
+            expert_parallel: 1,
+            all_reduce: Some(all_reduce.into()),
+            assignment_label: "Tensor shards".to_owned(),
             ranks,
             prefill_ns: None,
             decode_ns: None,
@@ -189,6 +258,32 @@ impl DashboardState {
             }
             RunEventKind::CollectiveStarted { .. } => view.state = "BARRIER".to_owned(),
             RunEventKind::CollectiveCompleted { .. } => view.state = "READY".to_owned(),
+            RunEventKind::TensorCollectiveStarted {
+                collective,
+                algorithm,
+                collective_sequence,
+                ..
+            } => {
+                view.state = format!(
+                    "{} #{}",
+                    collective.to_ascii_uppercase(),
+                    collective_sequence
+                );
+                self.push_recent(format!(
+                    "rank {rank}: {algorithm} {collective} #{collective_sequence}"
+                ));
+            }
+            RunEventKind::TensorCollectiveCompleted {
+                collective,
+                sent_bytes,
+                duration_ns,
+                ..
+            } => {
+                view.state = "READY".to_owned();
+                view.communication_ns = *duration_ns;
+                self.communication_bytes = self.communication_bytes.saturating_add(*sent_bytes);
+                self.push_recent(format!("rank {rank}: {collective} complete"));
+            }
             RunEventKind::MemorySample {
                 current_bytes,
                 limit_bytes,
@@ -301,8 +396,17 @@ pub fn render(frame: &mut Frame<'_>, state: &DashboardState) {
         ])
         .split(area);
     let header = Paragraph::new(format!(
-        "Model: {}   TP=1 PP={} EP=1   Backend={}",
-        state.model, state.world_size, state.backend
+        "Model: {}   TP={} PP={} EP={}   Backend={}{}",
+        state.model,
+        state.tensor_parallel,
+        state.pipeline_parallel,
+        state.expert_parallel,
+        state.backend,
+        state
+            .all_reduce
+            .as_ref()
+            .map(|value| format!("   AllReduce={value}"))
+            .unwrap_or_default(),
     ))
     .block(
         Block::default()
@@ -334,8 +438,15 @@ pub fn render(frame: &mut Frame<'_>, state: &DashboardState) {
 }
 
 fn render_ranks(frame: &mut Frame<'_>, area: Rect, state: &DashboardState) {
-    let header = Row::new([
-        "Rank", "Layers", "Phase", "Layer", "State", "Compute", "Comm", "Memory",
+    let header = Row::new(vec![
+        "Rank".to_owned(),
+        state.assignment_label.clone(),
+        "Phase".to_owned(),
+        "Layer".to_owned(),
+        "State".to_owned(),
+        "Compute".to_owned(),
+        "Comm".to_owned(),
+        "Memory".to_owned(),
     ])
     .style(
         Style::default()
@@ -363,7 +474,7 @@ fn render_ranks(frame: &mut Frame<'_>, area: Rect, state: &DashboardState) {
     });
     let widths = [
         Constraint::Length(5),
-        Constraint::Length(9),
+        Constraint::Length(if state.tensor_parallel > 1 { 32 } else { 9 }),
         Constraint::Length(8),
         Constraint::Length(6),
         Constraint::Length(9),
@@ -534,5 +645,55 @@ mod tests {
         assert_eq!(state.decode_ns, Some(60));
         assert_eq!(state.communication_bytes, 128);
         assert_eq!(state.generated_tokens, 1);
+    }
+
+    #[test]
+    fn tensor_dashboard_renders_shards_and_reduces_collective_events() {
+        let partition = dlir_tensor::TensorParallelPartition::plan(
+            SupportedModelId::SmolLm2_135MInstruct,
+            3,
+            8,
+            Some(512 << 20),
+        )
+        .unwrap();
+        let mut state =
+            DashboardState::new_tensor("smollm2-135m-instruct", &partition.ranks, "ring");
+        state.apply(&event(
+            0,
+            10,
+            RunEventKind::TensorCollectiveStarted {
+                collective: "all_reduce".into(),
+                algorithm: "ring".into(),
+                collective_sequence: 4,
+                shape: vec![1, 4, 576],
+            },
+        ));
+        state.apply(&event(
+            1,
+            20,
+            RunEventKind::TensorCollectiveCompleted {
+                collective: "all_reduce".into(),
+                collective_sequence: 4,
+                sent_bytes: 9_216,
+                received_bytes: 9_216,
+                duration_ns: 10,
+            },
+        ));
+        assert_eq!(state.tensor_parallel, 3);
+        assert_eq!(state.pipeline_parallel, 1);
+        assert_eq!(state.communication_bytes, 9_216);
+        assert!(state.ranks[0].layers.contains("V0..16384"));
+        let backend = TestBackend::new(120, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| render(frame, &state)).unwrap();
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(rendered.contains("TP=3 PP=1 EP=1"));
+        assert!(rendered.contains("AllReduce=ring"));
     }
 }

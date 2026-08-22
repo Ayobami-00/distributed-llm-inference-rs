@@ -8,8 +8,10 @@ Docker containers, connects them through TCP, and verifies enforced per-rank CPU
 `v0.4-pipeline` partitions the owned Llama model into contiguous CPU stages, transfers residual
 activations over TCP, feeds selected tokens back to rank 0, and exposes the run through a
 read-only terminal dashboard.
+`v0.5-tensor` derives native collectives from point-to-point transport and executes every Llama
+layer across strict equal CPU tensor shards.
 
-The workspace contains five crates:
+The workspace contains six crates:
 
 - `dlir-runtime` owns the model registry, artifact validation, Llama forward path, KV cache,
   memory planning, generation, events, and reports.
@@ -17,6 +19,7 @@ The workspace contains five crates:
   tensor/control packets, and send/receive.
 - `dlir-pipeline` owns deterministic stage assignment, stage memory plans, the rank-local
   pipeline state machine, typed control messages, events, and distributed reports.
+- `dlir-tensor` owns tensor partitions, manifests, rank execution, and schema-v1 TP reports.
 - `dlir-tui` reduces the event stream into an observational Ratatui dashboard. It owns no
   cluster or process lifecycle operations.
 - `dlir-cli` provides `dlir`, launches Docker rank processes, verifies cgroup limits, and owns
@@ -38,7 +41,9 @@ the [owned Llama forward pass](docs/llama-forward-pass.md),
 [TCP rendezvous and barrier](docs/tcp-rendezvous-and-barrier.md), and
 [Docker resource topologies](docs/docker-topologies.md),
 [pipeline partitioning and execution](docs/pipeline-parallelism.md), and the
-[event/TUI architecture](docs/events-and-tui.md).
+[event/TUI architecture](docs/events-and-tui.md),
+[native collectives](docs/native-collectives.md), and
+[tensor-parallel Llama execution](docs/tensor-parallelism.md).
 
 ## Build
 
@@ -135,6 +140,50 @@ visualization and generation continues; Ctrl-C requests launcher cleanup. The as
 completion remains on stdout, progress and metrics use stderr, and `--report` writes the complete
 schema-v1 distributed result. See [pipeline partitioning](docs/pipeline-parallelism.md) and
 [events and TUI](docs/events-and-tui.md).
+
+## Native collectives and tensor parallelism
+
+Check broadcast, reduce, all-gather, reduce-scatter, all-to-all, and both all-reduce algorithms
+without model artifacts:
+
+```console
+dlir collectives check --world-size 4
+dlir collectives bench --nproc 4 --total-cpus 2 --total-memory 1GiB
+```
+
+The centralized all-reduce gathers and sums on rank 0 before broadcasting. The ring algorithm
+flattens the tensor into equal chunks and executes reduce-scatter followed by all-gather. Both
+are implemented only through tagged `send` and `recv` and work over the transport-independent
+native communicator. The correctness check uses in-memory ranks; the benchmark launches
+resource-constrained Docker/TCP rank processes and synchronizes each measured iteration.
+
+Run tensor-sharded generation:
+
+```console
+dlir tensor \
+  --model smollm2-135m-instruct \
+  --tp 3 \
+  --prompt "Explain tensor parallelism." \
+  --max-new-tokens 8 \
+  --total-cpus 3 \
+  --total-memory 1536MiB \
+  --report tensor-run.json
+```
+
+Every rank owns every transformer layer but materializes only its vocabulary, Q/K/V,
+attention-output, gate/up/down, and LM-head slices. RMSNorm weights are replicated. Attention
+stores only `[1, K/TP, C, D]` keys and values per layer. Attention output and MLP down projections
+each perform an all-reduce, while the final vocabulary logits are all-gathered. Rank 0 chooses
+the greedy token and sends a typed continue/stop decision to its peers.
+
+Add `--tui` to observe tensor shard ranges, active layers, native collective sequences and ring
+steps, communication volume, timings, and cgroup memory live. The dashboard consumes the same
+validated event stream retained in the report and never manages rank execution.
+
+Strict GQA divisibility is enforced: SmolLM2 supports distributed `TP=3`, while TinyLlama
+supports `TP=2` and `TP=4`. Placement uses each container's enforced memory limit and happens
+before checkpoint download. See [native collectives](docs/native-collectives.md) and
+[tensor parallelism](docs/tensor-parallelism.md).
 
 ## Supported models
 
@@ -267,7 +316,7 @@ the remaining names describe the planned progression and may be refined as the w
 | [`v0.2-collectives`](https://github.com/Ayobami-00/distributed-llm-inference-rs/tree/v0.2-collectives) | Released | Thread-hosted logical ranks; an in-memory transport; copied CPU/F32 tensor packets; tagged point-to-point send/receive; deterministic text and JSON ring demonstrations; and offline communication correctness tests. |
 | [`v0.3-tcp`](https://github.com/Ayobami-00/distributed-llm-inference-rs/tree/v0.3-tcp) | Released | One rank per process and Docker container; versioned TCP transport; rank-0 rendezvous; a full peer mesh; reusable barrier synchronization; enforced per-rank CPU/memory limits; and reproducible text/JSON topology reports. |
 | [`v0.4-pipeline`](https://github.com/Ayobami-00/distributed-llm-inference-rs/tree/v0.4-pipeline) | Released | Balanced contiguous pipeline stages; rank-local weight and KV-cache materialization; TCP activation transfer; typed autoregressive token feedback; per-stage placement and distributed schema-v1 reports; and an optional read-only Ratatui event dashboard. |
-| `v0.5-tensor` | Planned | Column- and row-parallel linear layers, sharded attention and MLP execution, tensor-parallel collectives, and distributed generation. |
+| [`v0.5-tensor`](https://github.com/Ayobami-00/distributed-llm-inference-rs/tree/v0.5-tensor) | Released | Native broadcast, reduce, all-gather, reduce-scatter, all-to-all, centralized/ring all-reduce, strict tensor-sharded Llama execution, distributed greedy generation, live TUI events, Docker/TCP collective benchmarks, and schema-v1 reports. |
 | `v0.6-hybrid` | Planned | Process groups and combined tensor and pipeline parallelism, including topology-aware memory and communication measurements. |
 | `v0.7-cuda-nccl` | Planned | CUDA execution and an NCCL communicator implementing the same distributed semantics used by the CPU backends. |
 | `v0.8-expert` | Planned | A small mixture-of-experts model, expert placement, top-k token routing, and all-to-all expert-parallel execution. |

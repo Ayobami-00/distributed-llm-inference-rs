@@ -631,7 +631,7 @@ dependencies = [
 
 [[package]]
 name = "dlir-cli"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "candle-core",
@@ -640,6 +640,7 @@ dependencies = [
  "dlir-collectives",
  "dlir-pipeline",
  "dlir-runtime",
+ "dlir-tensor",
  "dlir-tui",
  "serde",
  "serde_json",
@@ -650,7 +651,7 @@ dependencies = [
 
 [[package]]
 name = "dlir-collectives"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "candle-core",
  "serde",
@@ -660,7 +661,7 @@ dependencies = [
 
 [[package]]
 name = "dlir-pipeline"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "candle-core",
  "candle-nn",
@@ -675,11 +676,12 @@ dependencies = [
 
 [[package]]
 name = "dlir-runtime"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "candle-core",
  "candle-nn",
  "candle-transformers",
+ "dlir-collectives",
  "hf-hub",
  "safetensors",
  "serde",
@@ -691,12 +693,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "dlir-tensor"
+version = "0.5.0"
+dependencies = [
+ "candle-core",
+ "candle-nn",
+ "dlir-collectives",
+ "dlir-pipeline",
+ "dlir-runtime",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "tokenizers 0.23.1",
+]
+
+[[package]]
 name = "dlir-tui"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "crossterm",
  "dlir-pipeline",
  "dlir-runtime",
+ "dlir-tensor",
  "ratatui",
 ]
 

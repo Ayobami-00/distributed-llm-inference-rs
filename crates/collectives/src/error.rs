@@ -140,6 +140,9 @@ pub enum CollectivesError {
     /// Rendezvous failed before the peer world was established.
     #[error("rendezvous error: {0}")]
     Rendezvous(String),
+    /// A collective call violated an operation, shape, rank, or sequence invariant.
+    #[error("collective error: {0}")]
+    Collective(String),
     /// JSON control-plane encoding or decoding failed.
     #[error("control-plane JSON error: {0}")]
     ControlJson(#[from] serde_json::Error),

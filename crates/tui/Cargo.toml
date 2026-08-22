@@ -10,4 +10,5 @@ repository.workspace = true
 crossterm.workspace = true
 dlir-pipeline = { path = "../pipeline" }
 dlir-runtime = { path = "../runtime" }
+dlir-tensor = { path = "../tensor" }
 ratatui.workspace = true
