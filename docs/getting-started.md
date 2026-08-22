@@ -49,6 +49,27 @@ rank. `--format json` returns the schema-v1 machine-readable report. The operati
 checkpoint, tokenizer, network socket, or Docker container. See
 [Ranks and point-to-point communication](ranks-and-point-to-point.md).
 
+## Launch one TCP process per container
+
+Start Docker Desktop or another local Docker Engine, then run:
+
+```console
+./target/release/dlir launch \
+  --nproc 2 \
+  --total-cpus 1 \
+  --total-memory 512MiB
+```
+
+The totals are required. This example creates two containers limited to `0.5` CPU and `256 MiB`
+each. The launcher builds `dlir:v0.3-tcp` when absent, creates a private network, waits for both
+rank processes, aggregates their reports, and cleans up the containers and network. Use
+`--keep-containers` only when you need to inspect stopped resources.
+
+The command verifies four independent facts: every container exposes the requested cgroup limits,
+rendezvous returns the same ordered world to every rank, the full TCP mesh can exchange the ring
+tensors, and both barrier generations complete. Docker diagnostics use stderr; text or schema-v1
+JSON uses stdout. See [Docker resource topologies](docker-topologies.md).
+
 ## List supported models
 
 ```console

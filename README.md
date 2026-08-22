@@ -3,15 +3,17 @@
 `dlir` is a learning-oriented distributed LLM inference runtime written in Rust. The
 `v0.1-single` checkpoint establishes a deliberately small inference baseline. The
 `v0.2-collectives` checkpoint adds logical ranks and copied point-to-point tensor communication
-without changing the single-rank model execution path.
+without changing the single-rank model execution path. `v0.3-tcp` moves those ranks into separate
+Docker containers, connects them through TCP, and verifies enforced per-rank CPU and memory limits.
 
 The workspace contains three crates:
 
 - `dlir-runtime` owns the model registry, artifact validation, Llama forward path, KV cache,
   memory planning, generation, events, and reports.
-- `dlir-collectives` owns rank identity, in-memory transport, tensor packets, send/receive, and
-  the deterministic point-to-point demonstration.
-- `dlir-cli` provides the `dlir` command and owns terminal/file output and exit behavior.
+- `dlir-collectives` owns rank identity, in-memory and TCP transports, rendezvous, barrier,
+  tensor packets, and send/receive.
+- `dlir-cli` provides `dlir`, launches Docker rank processes, verifies cgroup limits, and owns
+  terminal/file output and exit behavior.
 
 ## Documentation
 
@@ -24,8 +26,10 @@ shapes, runtime behavior, Rust modules, and correctness tests. Two reading paths
 
 The guides cover the [model registry and artifact boundary](docs/registry-artifacts-and-prompts.md),
 the [owned Llama forward pass](docs/llama-forward-pass.md),
-[KV-cached generation](docs/kv-cache-and-generation.md), and
-[ranks and point-to-point communication](docs/ranks-and-point-to-point.md).
+[KV-cached generation](docs/kv-cache-and-generation.md),
+[ranks and point-to-point communication](docs/ranks-and-point-to-point.md),
+[TCP rendezvous and barrier](docs/tcp-rendezvous-and-barrier.md), and
+[Docker resource topologies](docs/docker-topologies.md).
 
 ## Build
 
@@ -66,6 +70,27 @@ The backend transfers owned CPU/F32 tensor packets through in-memory FIFO channe
 shape and values rather than sharing Candle tensor handles across rank boundaries. The JSON result
 uses schema version 1 and contains deterministic, rank-ordered inputs, outputs, and correctness
 verdicts. No model artifacts or network access are involved.
+
+## TCP rank containers
+
+Start one rank process per Docker container and split explicit resource totals equally:
+
+```console
+dlir launch \
+  --nproc 4 \
+  --total-cpus 2 \
+  --total-memory 1GiB
+```
+
+The launcher checks Docker Engine capacity, assigns each rank `0.5` CPU and `256 MiB`, and reads
+the resulting cgroup limits back inside every container. Rank 0 coordinates rendezvous, all rank
+pairs establish direct persistent TCP connections, and two barriers surround the same
+deterministic ring used by `dlir p2p`. The image `dlir:v0.3-tcp` is built from the repository
+Dockerfile when missing and reused afterward.
+
+Docker status goes to stderr. The final rank-ordered report goes to stdout; add `--format json`
+for schema-v1 output. The topology uses one trusted Docker Engine and publishes no host ports.
+It does not load or partition a model.
 
 ## Supported models
 
@@ -162,8 +187,8 @@ includes all work. Candle's device is synchronized around measured model operati
 
 ## Test
 
-The normal suite is fully offline. It uses tiny deterministic synthetic Llama fixtures and
-threaded point-to-point communication tests:
+The normal suite is fully offline except for loopback TCP sockets. It uses tiny deterministic
+synthetic Llama fixtures, threaded transports, and child-process communication tests:
 
 ```console
 cargo fmt --all -- --check
@@ -194,7 +219,7 @@ the remaining names describe the planned progression and may be refined as the w
 | --- | --- | --- |
 | [`v0.1-single`](https://github.com/Ayobami-00/distributed-llm-inference-rs/tree/v0.1-single) | Released | A single CPU process and device; the closed model registry; model inspection and memory planning; an owned Llama forward path; prefill and cached decode; greedy generation; structured events, metrics, and JSON reports. |
 | [`v0.2-collectives`](https://github.com/Ayobami-00/distributed-llm-inference-rs/tree/v0.2-collectives) | Released | Thread-hosted logical ranks; an in-memory transport; copied CPU/F32 tensor packets; tagged point-to-point send/receive; deterministic text and JSON ring demonstrations; and offline communication correctness tests. |
-| `v0.3-tcp` | Planned | One rank per process, TCP transport, rendezvous, barrier synchronization, process startup, and reproducible multi-container CPU topologies. |
+| [`v0.3-tcp`](https://github.com/Ayobami-00/distributed-llm-inference-rs/tree/v0.3-tcp) | Released | One rank per process and Docker container; versioned TCP transport; rank-0 rendezvous; a full peer mesh; reusable barrier synchronization; enforced per-rank CPU/memory limits; and reproducible text/JSON topology reports. |
 | `v0.4-pipeline` | Planned | Pipeline-stage model partitioning, rank-local weight loading, activation transfer between stages, and autoregressive token feedback. |
 | `v0.5-tensor` | Planned | Column- and row-parallel linear layers, sharded attention and MLP execution, tensor-parallel collectives, and distributed generation. |
 | `v0.6-hybrid` | Planned | Process groups and combined tensor and pipeline parallelism, including topology-aware memory and communication measurements. |

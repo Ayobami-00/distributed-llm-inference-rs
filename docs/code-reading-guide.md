@@ -147,3 +147,23 @@ For `dlir p2p --world-size 2`, follow this order:
 No registry, artifact, tokenizer, Llama, cache, generation report, TCP socket, or process launcher
 is involved. The conceptual boundary and failure cases are described in
 [Ranks and point-to-point communication](ranks-and-point-to-point.md).
+
+## TCP Docker path
+
+For `dlir launch --nproc 2 --total-cpus 1 --total-memory 512MiB`:
+
+1. `Command::Launch` constructs a `LaunchRequest` and enters `run_launch` in
+   [`cli/launch.rs`](../crates/cli/src/launch.rs).
+2. The launcher parses totals, reads `docker info`, divides resources, and validates the plan
+   before creating anything.
+3. Docker starts one `dlir rank` process per constrained container on a private labelled network.
+4. Each rank reads its own cgroup files and rejects any CPU or memory mismatch before rendezvous.
+5. `TcpTransport::connect` in [`collectives/tcp.rs`](../crates/collectives/src/tcp.rs) binds the
+   peer listener, registers with rank 0, validates the peer table, and establishes the full mesh.
+6. `Communicator::barrier`, `send_tensor`, and `recv_tensor` run the startup barrier, TCP ring,
+   and completion barrier using versioned frames.
+7. Each process writes one JSON report. The launcher collects rank logs, restores rank ordering,
+   renders the final report, and removes only resources labelled with the run ID.
+
+Continue with [TCP rendezvous and barrier](tcp-rendezvous-and-barrier.md) and
+[Docker resource topologies](docker-topologies.md).

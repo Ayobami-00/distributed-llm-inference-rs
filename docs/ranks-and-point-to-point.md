@@ -25,15 +25,15 @@ world_size > 0
 peer != global_rank
 ```
 
-The final project intends each rank to live in its own process and device. This checkpoint first
-proves the semantics with a smaller physical arrangement:
+The in-memory backend first proves the semantics with a smaller physical arrangement:
 
 ```text
 one rank = one worker thread = one logical CPU device
 ```
 
 Each worker receives one exclusive `InMemoryTransport` endpoint. Workers do not inspect another
-rank's local tensor state.
+rank's local tensor state. `v0.3-tcp` preserves the same logical `Rank` while moving each endpoint
+into its own process and Docker container.
 
 ## Transport and communicator layers
 
@@ -51,7 +51,7 @@ flowchart TD
 ```
 
 `Transport` works with `TensorPacket`, not Candle tensor handles. `Communicator` owns conversion at
-both ends. A future TCP backend can serialize the same packet contract without changing callers.
+both ends. `TcpTransport` serializes the same packet contract without changing callers.
 
 ## Why tensors are copied
 
@@ -141,8 +141,8 @@ produce deterministic JSON.
 ## What this proves
 
 The checkpoint proves that rank-local workers can exchange owned tensors through a transport
-contract and detect topology, type, shape, ordering, timeout, and lifecycle failures. It does not
-yet prove inter-process or network behavior.
+contract and detect topology, type, shape, ordering, timeout, and lifecycle failures. The
+in-memory demonstration does not itself prove inter-process behavior; the TCP Docker path does.
 
-Barrier synchronization moves to `v0.3-tcp`. Tensor-parallel collectives such as all-reduce and
-all-gather are introduced with the tensor-parallel execution that requires them.
+Barrier synchronization and TCP arrive in `v0.3-tcp`. Tensor-parallel collectives such as
+all-reduce and all-gather are introduced with the tensor-parallel execution that requires them.

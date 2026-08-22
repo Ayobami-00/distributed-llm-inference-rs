@@ -1,8 +1,9 @@
 # Project documentation
 
-This documentation explains the implemented `v0.1-single` inference baseline and the
-`v0.2-collectives` point-to-point communication foundation. It is written for readers who know
-basic Rust but are new to transformer inference and distributed runtimes.
+This documentation explains the implementation through `v0.3-tcp`: single-process inference,
+in-memory point-to-point communication, and one TCP rank process per Docker container. It is
+written for readers who know basic Rust but are new to transformer inference and distributed
+runtimes.
 
 The goal is not merely to describe the modules. Each guide connects an inference concept to its
 equations, tensor shapes, Rust implementation, runtime output, and correctness tests.
@@ -17,16 +18,18 @@ functions:
 1. [Getting started](getting-started.md)
 2. [Architecture and request flow](architecture.md)
 3. [Ranks and point-to-point communication](ranks-and-point-to-point.md)
-4. [Model registry, artifacts, and prompts](registry-artifacts-and-prompts.md)
-5. [The owned Llama forward pass](llama-forward-pass.md)
-6. [KV cache and generation](kv-cache-and-generation.md)
-7. [Code-reading guide](code-reading-guide.md)
-8. [Glossary](glossary.md)
+4. [TCP rendezvous and barrier](tcp-rendezvous-and-barrier.md)
+5. [Docker resource topologies](docker-topologies.md)
+6. [Model registry, artifacts, and prompts](registry-artifacts-and-prompts.md)
+7. [The owned Llama forward pass](llama-forward-pass.md)
+8. [KV cache and generation](kv-cache-and-generation.md)
+9. [Code-reading guide](code-reading-guide.md)
+10. [Glossary](glossary.md)
 
 ### Code-first
 
 Start with the [code-reading guide](code-reading-guide.md). It contains ordered paths for both a
-`dlir generate` request and a `dlir p2p` exchange, with links to the relevant theory.
+`dlir generate`, `dlir p2p`, and `dlir launch`, with links to the relevant theory.
 
 ## Notation
 
@@ -58,6 +61,6 @@ Candle sources used through narrow compatibility overrides and is outside this c
 
 ## Scope
 
-These guides describe behavior implemented through `v0.2-collectives`. Future parallelism
+These guides describe behavior implemented through `v0.3-tcp`. Future parallelism
 checkpoints are listed in the root [README](../README.md#release-checkpoints), but their designs
 are not presented here as implemented behavior.
