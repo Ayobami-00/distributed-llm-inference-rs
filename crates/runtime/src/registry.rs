@@ -1,3 +1,9 @@
+//! Closed registry of model identities, architecture contracts, and execution support.
+//!
+//! Registry data drives CLI validation, artifact resolution, tensor-manifest validation, memory
+//! formulas, model construction, prompt rendering, and report identity. Arbitrary Hub IDs and
+//! aliases are intentionally not accepted.
+
 use crate::{DlirError, Result};
 use candle_core::DType;
 use serde::{Deserialize, Serialize};
@@ -6,15 +12,19 @@ use std::{fmt, str::FromStr};
 const SMOL_CHAT_TEMPLATE: &str = "<|im_start|>system\nYou are a helpful AI assistant named SmolLM, trained by Hugging Face<|im_end|>\n<|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n";
 const TINY_LLAMA_CHAT_TEMPLATE: &str = "<|user|>\n{prompt}</s>\n<|assistant|>\n";
 
+/// Stable CLI and report identifier for a model supported by this release.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum SupportedModelId {
+    /// Hugging Face SmolLM2 135M instruction-tuned checkpoint.
     #[serde(rename = "smollm2-135m-instruct")]
     SmolLm2_135MInstruct,
+    /// TinyLlama 1.1B chat checkpoint.
     #[serde(rename = "tinyllama-1.1b-chat")]
     TinyLlama1_1BChat,
 }
 
 impl SupportedModelId {
+    /// Returns the exact lowercase identifier accepted by the CLI and emitted in JSON.
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::SmolLm2_135MInstruct => "smollm2-135m-instruct",
@@ -22,6 +32,7 @@ impl SupportedModelId {
         }
     }
 
+    /// Returns the immutable compiled specification associated with this identifier.
     pub fn spec(self) -> &'static ModelSpec {
         SUPPORTED_MODELS
             .iter()
@@ -48,15 +59,20 @@ impl FromStr for SupportedModelId {
     }
 }
 
+/// Numeric dtype used for logical planning and, when supported, model execution.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum PlanDType {
+    /// IEEE 754 half precision, two bytes per element.
     F16,
+    /// Brain floating point, two bytes per element.
     Bf16,
+    /// IEEE 754 single precision, four bytes per element.
     F32,
 }
 
 impl PlanDType {
+    /// Returns the logical bytes occupied by one value of this dtype.
     pub const fn bytes(self) -> u64 {
         match self {
             Self::F16 | Self::Bf16 => 2,
@@ -64,6 +80,7 @@ impl PlanDType {
         }
     }
 
+    /// Converts the planning dtype into Candle's dtype representation.
     pub const fn candle(self) -> DType {
         match self {
             Self::F16 => DType::F16,
@@ -99,28 +116,38 @@ impl FromStr for PlanDType {
     }
 }
 
+/// Validation state of an execution backend/dtype combination.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ExecutionSupport {
+    /// The combination has passed release acceptance tests.
     Validated,
+    /// The combination is represented in the roadmap but cannot execute yet.
     Planned,
+    /// The combination is intentionally not supported.
     Unsupported,
 }
 
+/// On-disk naming and shape convention expected from checkpoint tensors.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TensorLayout {
+    /// Hugging Face `LlamaForCausalLM` safetensor names and shapes.
     HuggingFaceLlama,
 }
 
+/// Element dtype required in a registered checkpoint file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum CheckpointDType {
+    /// IEEE 754 half-precision checkpoint tensors.
     F16,
+    /// Brain floating-point checkpoint tensors.
     Bf16,
 }
 
 impl CheckpointDType {
+    /// Converts the registry value to the safetensors dtype discriminator.
     pub const fn safetensors(self) -> safetensors::Dtype {
         match self {
             Self::F16 => safetensors::Dtype::F16,
@@ -129,13 +156,17 @@ impl CheckpointDType {
     }
 }
 
+/// Fixed one-user-message chat template selected by the model registry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PromptTemplate {
+    /// SmolLM2 ChatML-style system/user/assistant template.
     SmolChatMl,
+    /// TinyLlama user/assistant template.
     TinyLlamaChat,
 }
 
 impl PromptTemplate {
+    /// Returns the fixed template source containing a `{prompt}` placeholder.
     pub const fn source(self) -> &'static str {
         match self {
             Self::SmolChatMl => SMOL_CHAT_TEMPLATE,
@@ -143,6 +174,7 @@ impl PromptTemplate {
         }
     }
 
+    /// Returns the stable template identity emitted by `dlir models`.
     pub const fn name(self) -> &'static str {
         match self {
             Self::SmolChatMl => "smollm2-chatml",
@@ -151,23 +183,43 @@ impl PromptTemplate {
     }
 }
 
+/// Llama architecture values required by model execution and memory planning.
+///
+/// The registry stores this independently of downloaded `config.json`; generation reconstructs
+/// the same value from that file and requires exact equality before loading weights.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct ModelConfig {
+    /// Number of token IDs and output logits.
     pub vocab_size: usize,
+    /// Width of the residual stream.
     pub hidden_size: usize,
+    /// Width of the SwiGLU intermediate projections.
     pub intermediate_size: usize,
+    /// Number of transformer blocks.
     pub num_hidden_layers: usize,
+    /// Number of query/attention heads.
     pub num_attention_heads: usize,
+    /// Number of compact key/value heads used by GQA.
     pub num_key_value_heads: usize,
+    /// Epsilon added by RMSNorm for numerical stability.
     pub rms_norm_eps: f64,
+    /// Base frequency parameter for unscaled RoPE.
     pub rope_theta: f64,
+    /// Maximum supported token positions.
     pub max_position_embeddings: usize,
+    /// Beginning-of-sequence token ID from the checkpoint configuration.
     pub bos_token_id: u32,
+    /// End-of-sequence token ID that terminates generation.
     pub eos_token_id: u32,
+    /// Whether the output projection reuses the token embedding matrix.
     pub tie_word_embeddings: bool,
 }
 
 impl ModelConfig {
+    /// Validates head divisibility and returns `hidden_size / num_attention_heads`.
+    ///
+    /// GQA additionally requires the number of query heads to be divisible by the number of KV
+    /// heads so every KV head serves an equal-sized query group.
     pub fn head_dim(&self) -> Result<usize> {
         if self.num_attention_heads == 0 || self.hidden_size % self.num_attention_heads != 0 {
             return Err(DlirError::InvalidConfig(format!(
@@ -186,23 +238,37 @@ impl ModelConfig {
     }
 }
 
+/// Complete immutable contract for one supported model checkpoint.
 #[derive(Debug)]
 pub struct ModelSpec {
+    /// Stable local identifier.
     pub id: SupportedModelId,
+    /// Hugging Face model repository.
     pub repository: &'static str,
+    /// Exact repository commit used for every artifact.
     pub revision: &'static str,
+    /// Safetensor filename at the pinned revision.
     pub weight_file: &'static str,
+    /// Architectural parameter total expected from formulas and checkpoint metadata.
     pub expected_parameters: u64,
+    /// Known on-disk checkpoint size used for download status.
     pub expected_checkpoint_bytes: u64,
+    /// Required dtype of every safetensor in the checkpoint.
     pub checkpoint_dtype: CheckpointDType,
+    /// Tensor naming and shape convention.
     pub tensor_layout: TensorLayout,
+    /// Architecture values used by planning and execution.
     pub config: ModelConfig,
+    /// Fixed prompt template used before tokenization.
     pub prompt_template: PromptTemplate,
+    /// CPU execution support state.
     pub cpu_support: ExecutionSupport,
+    /// CUDA execution support state.
     pub cuda_support: ExecutionSupport,
 }
 
 impl ModelSpec {
+    /// Requires this release's validated CPU/F32 execution combination.
     pub fn validate_cpu_dtype(&self, dtype: PlanDType) -> Result<()> {
         if self.cpu_support != ExecutionSupport::Validated || dtype != PlanDType::F32 {
             return Err(DlirError::UnsupportedExecution {
@@ -271,6 +337,7 @@ static SUPPORTED_MODELS: [ModelSpec; 2] = [
     },
 ];
 
+/// Returns the complete closed registry in stable display order.
 pub fn supported_models() -> &'static [ModelSpec] {
     &SUPPORTED_MODELS
 }

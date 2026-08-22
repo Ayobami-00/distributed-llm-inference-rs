@@ -1,3 +1,9 @@
+//! End-to-end orchestration for one deterministic generation request.
+//!
+//! This module sequences metadata validation, prompt tokenization, memory preflight, checkpoint
+//! validation, model/cache construction, prefill, cached decode, event emission, and report
+//! assembly. Transformer tensor math remains in the model module.
+
 use crate::{
     DlirError, MemoryBudget, PlanDType, RankMemoryPlan, Result, RunEvent, RunEventKind, StopReason,
     SupportedModelId, TimingReport, TopologyReport,
@@ -13,18 +19,32 @@ use std::time::{Duration, Instant};
 use tokenizers::Tokenizer;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+/// Inputs for one batch-one, CPU generation run.
 pub struct GenerationRequest {
+    /// Closed-registry model to execute.
     pub model: SupportedModelId,
+    /// Runtime dtype; v0.1 generation accepts only [`PlanDType::F32`].
     pub dtype: PlanDType,
+    /// Unformatted single-user message to place in the registered chat template.
     pub prompt: String,
+    /// Maximum number of non-EOS tokens to emit; must be at least one.
     pub max_new_tokens: usize,
+    /// Optional user-declared per-rank host memory budget checked before weight download.
     pub device_memory_budget: Option<MemoryBudget>,
 }
 
+/// Synchronous consumer of structured runtime events.
+///
+/// The observer is called on the inference thread before each event is retained in the final
+/// [`crate::GenerationReport`]. Implementations should return quickly. The CLI uses this contract
+/// to display progress and stream generated text without coupling terminal behavior to the
+/// runtime.
 pub trait EventObserver {
+    /// Receives the next monotonically sequenced rank-0 event.
     fn on_event(&mut self, event: &RunEvent);
 }
 
+/// Observer that discards live notifications while leaving report event collection intact.
 #[derive(Default)]
 pub struct NoopObserver;
 
@@ -62,6 +82,18 @@ impl<'a> EventRecorder<'a> {
     }
 }
 
+/// Executes one deterministic, batch-one generation request on the CPU.
+///
+/// Metadata is downloaded and validated before tokenization. The exact prompt-dependent memory
+/// preflight then runs before checkpoint weights are resolved. Model execution consists of one
+/// multi-token prefill followed by zero or more one-token cached decode forwards, with `argmax`
+/// selecting every token.
+///
+/// # Errors
+///
+/// Returns an error for invalid requests, unsupported execution modes, artifact or tokenizer
+/// failures, checkpoint mismatches, failed placement, cache invariant violations, tensor errors,
+/// or report-related I/O/JSON failures.
 pub fn generate(
     request: &GenerationRequest,
     observer: &mut dyn EventObserver,
@@ -137,12 +169,15 @@ pub fn generate(
     let model_load_time = model_load_start.elapsed();
     recorder.emit(RunEventKind::ModelLoadFinished);
 
+    // This boundary excludes artifacts and model loading. Tokenization happened earlier and is
+    // added explicitly when generation-total and TTFT metrics are assembled.
     let generation_start = Instant::now();
     recorder.emit(RunEventKind::PrefillStarted {
         prompt_tokens: prompt_tokens.len(),
     });
     device.synchronize()?;
     let prefill_start = Instant::now();
+    // Prompt token IDs [S] become the fixed batch-one model input [1, S].
     let input = Tensor::new(prompt_tokens.as_slice(), &device)?.unsqueeze(0)?;
     let mut logits = model.forward(&input, 0, &mut cache)?;
     device.synchronize()?;
@@ -173,6 +208,7 @@ pub fn generate(
             recorder.emit(RunEventKind::DecodeStepStarted { step });
             device.synchronize()?;
             let decode_start = Instant::now();
+            // Cached decode always supplies one previous token as [1, 1].
             let input = Tensor::new(&[next_token], &device)?.unsqueeze(0)?;
             let position = cache.len();
             logits = model.forward(&input, position, &mut cache)?;

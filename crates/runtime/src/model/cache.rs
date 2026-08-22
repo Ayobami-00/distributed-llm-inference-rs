@@ -1,3 +1,8 @@
+//! Preallocated batch-one key/value storage for every transformer layer.
+//!
+//! The cache stores compact GQA heads as `[1, KV heads, capacity, head dimension]`. Appends mutate
+//! the sequence axis in place and expose only the populated prefix to attention.
+
 use crate::{DlirError, ModelConfig, Result};
 use candle_core::{DType, Device, IndexOp, Tensor};
 
@@ -34,9 +39,11 @@ impl LayerKvCache {
                 capacity: self.capacity,
             });
         }
+        // The sequence axis is dimension 2 in [1, KV heads, capacity, head dimension].
         self.keys.slice_set(keys, 2, self.length)?;
         self.values.slice_set(values, 2, self.length)?;
         self.length = attempted;
+        // Attention must not observe the unpopulated zero-filled tail of the allocation.
         Ok((
             self.keys.i((.., .., ..self.length, ..))?,
             self.values.i((.., .., ..self.length, ..))?,
@@ -44,6 +51,10 @@ impl LayerKvCache {
     }
 }
 
+/// Preallocated per-layer key/value state for one autoregressive sequence.
+///
+/// Every layer has the same capacity. After a complete model forward, every layer has also
+/// appended the same number of token positions.
 #[derive(Debug)]
 pub struct KvCache {
     layers: Vec<LayerKvCache>,
@@ -51,6 +62,9 @@ pub struct KvCache {
 }
 
 impl KvCache {
+    /// Allocates zero-filled key and value tensors for every registered transformer layer.
+    ///
+    /// Capacity must be within `1..=config.max_position_embeddings`.
     pub fn new(
         config: &ModelConfig,
         capacity: usize,
@@ -73,6 +87,7 @@ impl KvCache {
         self.capacity
     }
 
+    /// Returns the populated token positions visible to the next forward call.
     pub fn len(&self) -> usize {
         self.layers.first().map_or(0, |layer| layer.length)
     }
@@ -89,6 +104,7 @@ impl KvCache {
             .append(keys, values)
     }
 
+    /// Calculates logical bytes populated across all layer keys and values.
     pub fn used_bytes(&self, config: &ModelConfig, dtype: DType) -> Result<u64> {
         let bytes = dtype.size_in_bytes() as u64;
         Ok(2 * config.num_hidden_layers as u64

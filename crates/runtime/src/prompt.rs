@@ -1,5 +1,15 @@
+//! Fixed, registry-selected chat prompt rendering.
+//!
+//! Templates include their own special-token markers and assistant-generation suffix, so callers
+//! encode the rendered text without asking the tokenizer to add special tokens again.
+
 use crate::{DlirError, PromptTemplate, Result};
 
+/// Renders one user message using a supported model's fixed chat template.
+///
+/// # Errors
+///
+/// Returns [`DlirError::EmptyPrompt`] when `prompt` is empty or whitespace-only.
 pub fn render_prompt(template: PromptTemplate, prompt: &str) -> Result<String> {
     if prompt.trim().is_empty() {
         return Err(DlirError::EmptyPrompt);

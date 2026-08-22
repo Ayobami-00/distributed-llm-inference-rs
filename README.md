@@ -10,6 +10,19 @@ The workspace contains two crates:
   memory planning, generation, events, and reports.
 - `dlir-cli` provides the `dlir` command and owns terminal/file output and exit behavior.
 
+## Documentation
+
+The [v0.1 documentation](docs/README.md) connects inference theory, tensor shapes, runtime
+behavior, Rust modules, and correctness tests. Two reading paths are available:
+
+- Start with [architecture and request flow](docs/architecture.md) for a concept-first tour.
+- Start with the [code-reading guide](docs/code-reading-guide.md) to follow one generation request
+  from CLI parsing to its final report.
+
+The guides cover the [model registry and artifact boundary](docs/registry-artifacts-and-prompts.md),
+the [owned Llama forward pass](docs/llama-forward-pass.md),
+[KV-cached generation](docs/kv-cache-and-generation.md), and the rest of the v0.1 execution path.
+
 ## Build
 
 Rust 1.85 or newer is required.
@@ -125,6 +138,8 @@ The normal suite is fully offline and uses tiny deterministic synthetic Llama fi
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --no-deps -- -D warnings
 cargo test --workspace --all-targets
+cargo test --workspace --doc --locked
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --document-private-items --locked
 ```
 
 The synthetic model is checked against Candle's reference Llama implementation at F32 and

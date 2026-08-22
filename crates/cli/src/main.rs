@@ -1,3 +1,9 @@
+//! Command-line presentation layer for the single-process dlir runtime.
+//!
+//! The binary converts CLI arguments into runtime request types, renders model and inspection
+//! results, streams assistant text through an event observer, writes optional JSON reports, and
+//! owns exit behavior. Inference and planning remain in `dlir-runtime`.
+
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use dlir_runtime::{
@@ -19,6 +25,7 @@ use std::{
     about = "A single-process Llama inference baseline"
 )]
 struct Cli {
+    /// Operation to perform.
     #[command(subcommand)]
     command: Command,
 }
@@ -27,38 +34,52 @@ struct Cli {
 enum Command {
     /// List the closed set of model checkpoints supported by this release.
     Models {
+        /// Render human-readable text or schema-versioned JSON.
         #[arg(long, value_enum, default_value_t)]
         format: OutputFormat,
     },
     /// Inspect architecture and logical memory without downloading artifacts.
     Inspect {
+        /// Exact identifier from `dlir models`; arbitrary Hub IDs are rejected.
         #[arg(long)]
         model: SupportedModelId,
+        /// Logical planning dtype: f16, bf16, or f32.
         #[arg(long, default_value = "f32")]
         dtype: PlanDType,
+        /// KV-cache capacity to model in token positions.
         #[arg(long, default_value_t = 512)]
         context_length: usize,
+        /// Optional advisory per-rank host budget using bytes, KiB, MiB, or GiB.
         #[arg(long)]
         device_memory_budget: Option<MemoryBudget>,
+        /// Render human-readable text or schema-versioned JSON.
         #[arg(long, value_enum, default_value_t)]
         format: OutputFormat,
+        /// Write the selected representation to a file instead of stdout.
         #[arg(long)]
         output: Option<PathBuf>,
     },
     /// Generate one deterministic assistant completion on CPU.
     Generate {
+        /// Exact identifier from `dlir models`; arbitrary Hub IDs are rejected.
         #[arg(long)]
         model: SupportedModelId,
+        /// Execution device; v0.1 accepts only cpu.
         #[arg(long, value_enum, default_value_t)]
         device: DeviceArg,
+        /// Runtime dtype; v0.1 CPU generation accepts only f32.
         #[arg(long, default_value = "f32")]
         dtype: PlanDType,
+        /// Non-empty user message to wrap in the model's registered chat template.
         #[arg(long)]
         prompt: String,
+        /// Maximum number of non-EOS tokens to emit; must be at least one.
         #[arg(long, default_value_t = 32)]
         max_new_tokens: usize,
+        /// Advisory per-rank host budget in bytes/KiB/MiB/GiB, checked before weight download.
         #[arg(long)]
         device_memory_budget: Option<MemoryBudget>,
+        /// Write the complete schema-v1 generation report as JSON.
         #[arg(long)]
         report: Option<PathBuf>,
     },
