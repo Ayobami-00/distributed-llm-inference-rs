@@ -40,14 +40,14 @@ pub fn create_in_memory_world(
         .map(|_| (0..world_size).map(|_| None).collect())
         .collect();
 
-    for source in 0..world_size {
-        for destination in 0..world_size {
+    for (source, sender_row) in sender_rows.iter_mut().enumerate() {
+        for (destination, receiver_row) in receiver_rows.iter_mut().enumerate() {
             if source == destination {
                 continue;
             }
             let (sender, receiver) = mpsc::channel();
-            sender_rows[source][destination] = Some(sender);
-            receiver_rows[destination][source] = Some(receiver);
+            sender_row[destination] = Some(sender);
+            receiver_row[source] = Some(receiver);
         }
     }
 
