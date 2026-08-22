@@ -11,14 +11,16 @@ The workspace requires Rust 1.85 or newer. From the repository root:
 cargo build --release --locked
 ```
 
-The executable is `target/release/dlir`. The five crates have separate responsibilities:
+The executable is `target/release/dlir`. The six crates have separate responsibilities:
 
 - `dlir-cli` parses commands and owns terminal and file output.
 - `dlir-collectives` owns logical ranks and point-to-point tensor communication.
 - `dlir-runtime` owns model knowledge, inference, memory planning, and reports.
 - `dlir-pipeline` composes stage planning, stage-local execution, control messages, events, and
   distributed reports.
-- `dlir-tui` projects pipeline events into a read-only Ratatui dashboard.
+- `dlir-tui` projects pipeline and tensor events into a read-only Ratatui dashboard.
+- `dlir-tensor` plans strict tensor shards, executes TP ranks, and aggregates distributed
+  generation reports.
 
 ## Exchange tensors between ranks
 
@@ -113,6 +115,53 @@ its stage and that autoregressive feedback closes the loop. It has no microbatch
 not expected to improve tokens/second. See
 [Pipeline partitioning and execution](pipeline-parallelism.md) and
 [Distributed events and the observational TUI](events-and-tui.md).
+
+## Check and benchmark native collectives
+
+The offline correctness check runs every native group operation over in-memory ranks:
+
+```console
+./target/release/dlir collectives check --world-size 4
+```
+
+The benchmark moves the same all-reduce implementation to physical Docker/TCP ranks:
+
+```console
+./target/release/dlir collectives bench \
+  --nproc 4 \
+  --total-cpus 2 \
+  --total-memory 1GiB \
+  --sizes 4KiB,64KiB,1MiB,16MiB
+```
+
+Each iteration starts behind a TCP barrier. The host reports maximum-rank latency statistics,
+effective payload bandwidth, and logical wire bytes while retaining every rank's samples and
+collective traces in schema-v1 JSON. The launcher enforces and verifies the same equal cgroup
+limits used by the topology and model commands.
+
+## Generate with tensor parallelism
+
+SmolLM2's GQA layout supports three equal tensor shards:
+
+```console
+./target/release/dlir tensor \
+  --model smollm2-135m-instruct \
+  --tp 3 \
+  --prompt "Explain tensor parallelism." \
+  --max-new-tokens 8 \
+  --total-cpus 3 \
+  --total-memory 1536MiB \
+  --report tensor-run.json
+```
+
+All ranks execute every transformer layer. Each materializes only its vocabulary, attention-head,
+KV-head, and MLP-feature slices plus replicated RMSNorm weights. Attention and MLP row-parallel
+outputs use native all-reduce; logits use all-gather. Rank 0 greedily selects the next token and
+broadcasts the typed decision.
+
+Add `--tui` from an interactive terminal to follow layer and collective events live. The same
+validated JSONL stream drives text progress, the schema-v1 report, and the read-only dashboard.
+`q`/Esc closes only the visualization, while generation and scoped cleanup continue.
 
 ## List supported models
 

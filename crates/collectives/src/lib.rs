@@ -32,6 +32,9 @@
 #![deny(rustdoc::broken_intra_doc_links)]
 
 mod barrier;
+mod benchmark;
+mod check;
+mod collective;
 mod communicator;
 mod control;
 mod error;
@@ -44,6 +47,21 @@ mod tensor;
 mod transport;
 
 pub use barrier::BarrierTransport;
+pub use benchmark::{
+    CollectiveBenchmarkCase, CollectiveBenchmarkManifest, CollectiveBenchmarkRankCase,
+    CollectiveBenchmarkRankReport, CollectiveBenchmarkReport, CollectiveBenchmarkResources,
+    aggregate_all_reduce_benchmark, run_all_reduce_benchmark_rank,
+    run_in_memory_all_reduce_benchmark,
+};
+pub use check::{
+    CollectiveCheckOperation, CollectiveCheckRankReport, CollectiveCheckReport,
+    run_collective_check,
+};
+pub use collective::{
+    AllReduceAlgorithm, CollectiveAlgorithm, CollectiveCommunicator, CollectiveDescriptor,
+    CollectiveKind, CollectiveObserver, CollectiveTrace, NativeCollectives, NoopCollectiveObserver,
+    ReduceOp,
+};
 pub use communicator::Communicator;
 pub use control::{ControlPacket, MAX_CONTROL_BYTES};
 pub use error::{CollectivesError, Result};

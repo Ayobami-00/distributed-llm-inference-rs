@@ -1,8 +1,9 @@
 # Docker resource topologies
 
-`dlir launch` and `dlir pipeline` turn an explicit total resource budget into one enforced
-container budget per rank. The equal division is execution capacity; only the pipeline stage plan
-decides which model weights each rank materializes.
+`dlir launch`, `dlir pipeline`, `dlir collectives bench`, and `dlir tensor` turn an explicit total
+resource budget into one enforced container budget per rank. The equal division is execution
+capacity; only the pipeline-stage or tensor-shard plan decides which model weights each rank
+materializes.
 
 ## Planning resources
 
@@ -59,7 +60,8 @@ flowchart TD
 ```
 
 The topology command defaults to `dlir:v0.3-tcp`; pipeline generation defaults to
-`dlir:v0.4-pipeline`. `--rebuild` uses a fresh build. Container names, network, and labels include
+`dlir:v0.4-pipeline`; v0.5 benchmark and tensor generation default to `dlir:v0.5-tensor`.
+`--rebuild` uses a fresh build. Container names, network, and labels include
 the run ID. No port is published to the host. Normal completion, failure, and interrupt cleanup
 target only the exact names created by that launch. `--keep-containers` retains stopped resources
 for debugging and never removes the cached image. For pipeline runs it also preserves and prints
@@ -81,3 +83,9 @@ each rank's `StageMemoryPlan` is compared with the exact enforced memory limit b
 download. The estimate includes local logical F32 weights and local KV capacity, while observed
 `memory.current`/`memory.max` values are retained separately. Equal container limits do not imply
 equal stage use and do not describe peak RSS.
+
+`dlir tensor` applies the same boundary to every shard's local weights, replicated RMSNorms, and
+local `K/TP` KV cache. `dlir collectives bench` has no model placement plan, but still verifies the
+requested cgroup limits before opening TCP and again after measurement. Model estimates describe
+logical persistent state rather than peak process RSS, mapped checkpoint pages, workspaces, or
+allocator overhead.

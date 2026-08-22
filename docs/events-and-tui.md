@@ -1,6 +1,7 @@
 # Distributed events and the observational TUI
 
-The `v0.4` terminal UI is a projection of instrumentation, not a cluster manager. Rank execution
+The terminal UI used by `v0.4-pipeline` and `v0.5-tensor` is a projection of instrumentation,
+not a cluster manager. Rank execution
 does not depend on Ratatui, and the UI cannot start, stop, retry, reconfigure, or send commands to
 a rank.
 
@@ -12,7 +13,7 @@ flushed schema-versioned JSON line, followed by one final rank result. The host 
 container logs concurrently and gives the same validated stream to:
 
 1. the text progress observer;
-2. the aggregate [`PipelineReport`](../crates/pipeline/src/report.rs); and
+2. the aggregate pipeline or tensor-parallel report; and
 3. the [`DashboardState`](../crates/tui/src/lib.rs) reducer when `--tui` is active.
 
 ```mermaid
@@ -35,7 +36,7 @@ they shared a globally synchronized clock.
 ## Event vocabulary
 
 [`RunEventKind`](../crates/runtime/src/report.rs) is shared by single-rank and distributed
-execution. Pipeline ranks publish the following lifecycle:
+execution. Distributed inference ranks publish the following lifecycle:
 
 | Event | Meaning |
 | --- | --- |
@@ -49,17 +50,19 @@ execution. Pipeline ranks publish the following lifecycle:
 | `ControlSent/Received` | Token/decision peer, phase, step, bytes, and duration |
 | `TokenGenerated` | Rank-0 non-EOS token ID and available decoded fragment |
 | `GenerationFinished` | Rank-local successful stop reason |
+| `TensorCollectiveStarted/Completed` | Native collective algorithm, sequence, shape, bytes, and duration |
 
-Barrier is the only collective kind in this checkpoint. The collective event pair is deliberately
-generic so later native collectives can use the same observation contract.
+Pipeline ranks use generic collective events for barriers. Tensor ranks additionally emit native
+collective events for broadcast, all-gather, and centralized or ring all-reduce phases.
 
 ## Reducer state
 
 [`DashboardState::apply`](../crates/tui/src/lib.rs) is a deterministic reducer with no transport
 or Docker dependency. It tracks:
 
-- model, TCP backend, `TP=1`, `PP=N`, and `EP=1`;
-- stage/layer range, current phase/layer/state, and last compute/communication duration per rank;
+- model, TCP backend, TP/PP/EP topology, and selected all-reduce algorithm;
+- stage ranges or tensor shard ranges, current phase/layer/collective, and last
+  compute/communication duration per rank;
 - logical stage memory, observed cgroup current usage, and enforced limit;
 - rank-0 prefill, TTFT, and mean completed decode duration;
 - generated-token count and logical sent activation/control bytes; and
@@ -95,7 +98,7 @@ released. It ends when rank 0 receives and decodes the first non-EOS token. Cold
 host measurement that also includes artifact work, image/container startup, rendezvous, and stage
 loading.
 
-The timings measure the current sequential schedule. A lower per-layer compute duration does not
+Pipeline timings measure the current sequential schedule. A lower per-layer compute duration does not
 mean stages overlap; at most one request microbatch exists, so downstream stages wait for the
 activation chain on every token.
 
@@ -104,4 +107,5 @@ activation chain on every token.
 The TUI uses Ratatui's `TestBackend` at normal and narrow terminal sizes. Reducer tests feed
 synthetic events and verify prefill/TTFT/decode arithmetic, byte counting, and token state without
 opening a terminal. Event recorder tests prove rank identity and sequence monotonicity, and report
-round-trip tests protect the schema-v1 boundary.
+round-trip tests protect the schema-v1 boundary. Tensor-specific snapshots also verify shard
+labels and native-collective state.

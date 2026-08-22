@@ -109,6 +109,27 @@ impl KvCache {
         Ok(Self { layers, capacity })
     }
 
+    /// Allocates every transformer layer while storing only this TP rank's compact KV heads.
+    pub fn new_tensor_parallel(
+        config: &ModelConfig,
+        tp_size: usize,
+        capacity: usize,
+        dtype: DType,
+        device: &Device,
+    ) -> Result<Self> {
+        if tp_size == 0 || config.num_key_value_heads % tp_size != 0 {
+            return Err(DlirError::InvalidConfig(format!(
+                "{} KV heads cannot be divided across TP={tp_size}",
+                config.num_key_value_heads
+            )));
+        }
+        let mut local = *config;
+        local.hidden_size = config.hidden_size / tp_size;
+        local.num_attention_heads = config.num_attention_heads / tp_size;
+        local.num_key_value_heads = config.num_key_value_heads / tp_size;
+        Self::new(&local, capacity, dtype, device)
+    }
+
     pub(crate) fn capacity(&self) -> usize {
         self.capacity
     }

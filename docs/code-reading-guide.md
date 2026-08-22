@@ -203,3 +203,45 @@ For `dlir pipeline --model smollm2-135m-instruct ... --nproc 2`:
 The theory, shapes, memory formula, and stop conditions are in
 [Pipeline partitioning and execution](pipeline-parallelism.md). Event timing and terminal behavior
 are in [Distributed events and the observational TUI](events-and-tui.md).
+
+## Native collective benchmark path
+
+For `dlir collectives bench --nproc 4 ...`:
+
+1. `run_collective_bench` in [`cli/benchmark.rs`](../crates/cli/src/benchmark.rs) parses payloads,
+   validates Docker capacity, divides cgroup limits, and writes a read-only benchmark manifest.
+2. Each container selects `dlir rank --workload collective-benchmark`, verifies its cgroup, and
+   joins the protocol-v2 TCP world.
+3. `run_all_reduce_benchmark_rank` in
+   [`collectives/benchmark.rs`](../crates/collectives/src/benchmark.rs) synchronizes every warmup
+   and measured iteration with a barrier and invokes `NativeCollectives::all_reduce`.
+4. `NativeCollectives` in [`collectives/collective.rs`](../crates/collectives/src/collective.rs)
+   executes centralized gather/sum/broadcast or ring reduce-scatter/all-gather solely through
+   tagged communicator sends and receives.
+5. The host validates rank identity and case/sample agreement, takes maximum-rank latency per
+   iteration, writes text or schema-v1 JSON, and removes only current-run Docker resources.
+
+## Tensor-parallel Docker path
+
+For `dlir tensor --model smollm2-135m-instruct --tp 3 ...`:
+
+1. `run_tensor` in [`cli/tensor.rs`](../crates/cli/src/tensor.rs) resolves metadata, tokenizes the
+   prompt, asks `TensorParallelPartition::plan` for exact shards, and checks every local persistent
+   plan against its enforced container limit before checkpoint download.
+2. The host validates the pinned checkpoint once, writes `TensorParallelManifest`, and launches
+   one read-only `dlir rank --workload tensor` container per TP shard.
+3. Each rank joins TCP, then `run_tensor_parallel_rank_observed` in
+   [`tensor/runner.rs`](../crates/tensor/src/runner.rs) loads `TensorParallelLlama` with only its
+   assigned mmap slices and allocates caches with `K/TP` KV heads.
+4. Follow `TensorParallelLlama::forward_observed` in
+   [`model/tensor_parallel.rs`](../crates/runtime/src/model/tensor_parallel.rs): vocab-parallel
+   embedding reduces once, then every attention output and MLP down projection all-reduces its
+   partial full-width result while layer callbacks emit events.
+5. The sharded LM head all-gathers logits. Rank 0 chooses greedy `argmax`, publishes the token,
+   and sends a typed token/continue/stop control to each peer before cached decode repeats.
+6. Each rank writes flushed event JSONL and a final result. The host sequence validator feeds the
+   same records to text progress, `TensorParallelReport`, and optional `DashboardState`, then
+   writes the report and performs scoped cleanup.
+
+The shard axes, GQA restrictions, cache shapes, and equivalence tests are explained in
+[Tensor-parallel Llama and GQA](tensor-parallelism.md).

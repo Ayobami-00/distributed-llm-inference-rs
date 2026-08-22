@@ -66,6 +66,7 @@ mod generation;
 mod inspect;
 mod memory;
 mod model;
+mod parallel;
 mod prompt;
 mod registry;
 mod report;
@@ -80,7 +81,14 @@ pub use memory::{
     BudgetSource, MemoryBudget, MemoryComponentBreakdown, MemoryDomain, PlacementVerdict,
     RankMemoryPlan, format_bytes, parse_byte_size,
 };
-pub use model::{LayerObserver, LlamaStage, NoopLayerObserver, StageKvCache};
+pub use model::{
+    LayerObserver, LlamaStage, NoopLayerObserver, NoopTensorParallelObserver, StageKvCache,
+    TensorParallelKvCache, TensorParallelLlama, TensorParallelObserver,
+};
+pub use parallel::{
+    ColumnParallelLinear, ParallelContext, RowParallelLinear, ShardRange, TensorShardPlan,
+    VocabParallelEmbedding, VocabParallelLmHead, plan_tensor_shard,
+};
 pub use prompt::render_prompt;
 pub use registry::{
     CheckpointDType, ExecutionSupport, ModelConfig, ModelSpec, PlanDType, PromptTemplate,

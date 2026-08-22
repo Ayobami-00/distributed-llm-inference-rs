@@ -86,4 +86,7 @@ pub enum DlirError {
     /// JSON parsing or serialization failure.
     #[error("JSON error: {0}")]
     Json(#[from] serde_json::Error),
+    /// Native point-to-point or collective operation failure.
+    #[error("collective error: {0}")]
+    Collective(#[from] dlir_collectives::CollectivesError),
 }

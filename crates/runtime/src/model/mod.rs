@@ -5,6 +5,13 @@
 
 mod cache;
 mod llama;
+mod tensor_parallel;
 
 pub use cache::{KvCache, StageKvCache};
 pub use llama::{LayerObserver, Llama, LlamaStage, NoopLayerObserver};
+pub use tensor_parallel::{
+    NoopTensorParallelObserver, TensorParallelLlama, TensorParallelObserver,
+};
+
+/// KV cache containing every layer but only one rank's compact GQA heads.
+pub type TensorParallelKvCache = KvCache;
