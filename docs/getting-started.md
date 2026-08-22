@@ -1,7 +1,7 @@
 # Getting started
 
-This chapter runs the three CLI surfaces and explains what crosses the boundary between the CLI
-and the runtime. The next chapters unpack the implementation behind each result.
+This chapter runs the CLI surfaces and explains what crosses the boundaries between the CLI,
+communication crate, and inference runtime. The next chapters unpack each result.
 
 ## Build
 
@@ -11,10 +11,43 @@ The workspace requires Rust 1.85 or newer. From the repository root:
 cargo build --release --locked
 ```
 
-The executable is `target/release/dlir`. The two crates have separate responsibilities:
+The executable is `target/release/dlir`. The three crates have separate responsibilities:
 
 - `dlir-cli` parses commands and owns terminal and file output.
+- `dlir-collectives` owns logical ranks and point-to-point tensor communication.
 - `dlir-runtime` owns model knowledge, inference, memory planning, and reports.
+
+## Exchange tensors between ranks
+
+Start two logical rank workers and exchange tensors in both directions:
+
+```console
+./target/release/dlir p2p --world-size 2
+```
+
+The output is deterministic:
+
+```text
+P2P TENSOR EXCHANGE
+Backend:    in_memory
+Pattern:    ring
+World size: 2
+
+rank 0 sent [1, 2, 3, 4] to rank 1
+rank 0 received [5, 6, 7, 8] from rank 1
+rank 0 verification: PASS
+
+rank 1 sent [5, 6, 7, 8] to rank 0
+rank 1 received [1, 2, 3, 4] from rank 0
+rank 1 verification: PASS
+
+Result: PASS
+```
+
+`--world-size 4` forms a ring: each rank sends to the next rank and receives from the previous
+rank. `--format json` returns the schema-v1 machine-readable report. The operation uses no model,
+checkpoint, tokenizer, network socket, or Docker container. See
+[Ranks and point-to-point communication](ranks-and-point-to-point.md).
 
 ## List supported models
 

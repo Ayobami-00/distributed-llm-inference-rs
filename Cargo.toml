@@ -1,9 +1,9 @@
 [workspace]
-members = ["crates/runtime", "crates/cli"]
+members = ["crates/runtime", "crates/collectives", "crates/cli"]
 resolver = "2"
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.85"
 license = "MIT"

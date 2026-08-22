@@ -1,11 +1,13 @@
-//! Command-line presentation layer for the single-process dlir runtime.
+//! Command-line presentation layer for the dlir inference laboratory.
 //!
-//! The binary converts CLI arguments into runtime request types, renders model and inspection
-//! results, streams assistant text through an event observer, writes optional JSON reports, and
-//! owns exit behavior. Inference and planning remain in `dlir-runtime`.
+//! The binary converts CLI arguments into runtime requests, renders model, inspection, and
+//! point-to-point results, streams assistant text through an event observer, writes optional JSON
+//! reports, and owns exit behavior. Inference remains in `dlir-runtime`; communication remains in
+//! `dlir-collectives`.
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
+use dlir_collectives::{P2pReport, run_p2p_ring};
 use dlir_runtime::{
     EventObserver, GenerationRequest, InspectionReport, InspectionRequest, MemoryBudget, ModelSpec,
     PlanDType, RankMemoryPlan, RunEvent, RunEventKind, SupportedModelId, format_bytes, generate,
@@ -16,13 +18,16 @@ use std::{
     fs,
     io::{self, Write},
     path::{Path, PathBuf},
+    time::Duration,
 };
+
+const P2P_RECEIVE_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Parser)]
 #[command(
     name = "dlir",
     version,
-    about = "A single-process Llama inference baseline"
+    about = "A distributed LLM inference laboratory"
 )]
 struct Cli {
     /// Operation to perform.
@@ -32,6 +37,15 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Exchange copied CPU/F32 tensors between in-memory rank workers.
+    P2p {
+        /// Number of logical ranks in the ring; must be at least two.
+        #[arg(long, default_value_t = 2)]
+        world_size: usize,
+        /// Render human-readable text or schema-versioned JSON.
+        #[arg(long, value_enum, default_value_t)]
+        format: OutputFormat,
+    },
     /// List the closed set of model checkpoints supported by this release.
     Models {
         /// Render human-readable text or schema-versioned JSON.
@@ -100,6 +114,7 @@ enum DeviceArg {
 
 fn main() -> Result<()> {
     match Cli::parse().command {
+        Command::P2p { world_size, format } => run_p2p(world_size, format),
         Command::Models { format } => print_models(format),
         Command::Inspect {
             model,
@@ -137,6 +152,67 @@ fn main() -> Result<()> {
             report.as_deref(),
         ),
     }
+}
+
+fn run_p2p(world_size: usize, format: OutputFormat) -> Result<()> {
+    let report = run_p2p_ring(world_size, P2P_RECEIVE_TIMEOUT)?;
+    match format {
+        OutputFormat::Text => print!("{}", p2p_text(&report)),
+        OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&report)?),
+    }
+    if !report.success {
+        anyhow::bail!("point-to-point tensor verification failed");
+    }
+    Ok(())
+}
+
+fn p2p_text(report: &P2pReport) -> String {
+    let mut text = format!(
+        "P2P TENSOR EXCHANGE\n\
+         Backend:    {}\n\
+         Pattern:    {}\n\
+         World size: {}\n",
+        report.backend, report.pattern, report.world_size,
+    );
+    for rank in &report.ranks {
+        text.push_str(&format!(
+            "\nrank {} sent {} to rank {}\n\
+             rank {} received {} from rank {}\n\
+             rank {} verification: {}\n",
+            rank.rank,
+            tensor_values(&rank.sent.values),
+            rank.sent_to,
+            rank.rank,
+            tensor_values(&rank.received.values),
+            rank.received_from,
+            rank.rank,
+            if rank.matches_expected {
+                "PASS"
+            } else {
+                "FAIL"
+            },
+        ));
+    }
+    text.push_str(&format!(
+        "\nResult: {}\n",
+        if report.success { "PASS" } else { "FAIL" }
+    ));
+    text
+}
+
+fn tensor_values(values: &[f32]) -> String {
+    let values = values
+        .iter()
+        .map(|value| {
+            if value.fract() == 0.0 {
+                format!("{value:.0}")
+            } else {
+                value.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("[{values}]")
 }
 
 fn print_models(format: OutputFormat) -> Result<()> {
@@ -432,6 +508,42 @@ mod tests {
             ])
             .is_err()
         );
+    }
+
+    #[test]
+    fn p2p_text_and_json_are_deterministic_and_versioned() {
+        let report = run_p2p_ring(2, Duration::from_millis(250)).unwrap();
+        assert_eq!(
+            p2p_text(&report),
+            "P2P TENSOR EXCHANGE\n\
+             Backend:    in_memory\n\
+             Pattern:    ring\n\
+             World size: 2\n\
+             \n\
+             rank 0 sent [1, 2, 3, 4] to rank 1\n\
+             rank 0 received [5, 6, 7, 8] from rank 1\n\
+             rank 0 verification: PASS\n\
+             \n\
+             rank 1 sent [5, 6, 7, 8] to rank 0\n\
+             rank 1 received [1, 2, 3, 4] from rank 0\n\
+             rank 1 verification: PASS\n\
+             \n\
+             Result: PASS\n"
+        );
+        let value = serde_json::to_value(&report).unwrap();
+        assert_eq!(value["schema_version"], 1);
+        assert_eq!(value["backend"], "in_memory");
+        assert_eq!(value["pattern"], "ring");
+        assert_eq!(
+            value["ranks"][0]["sent"]["values"],
+            json!([1.0, 2.0, 3.0, 4.0])
+        );
+        assert_eq!(value["success"], true);
+    }
+
+    #[test]
+    fn p2p_requires_at_least_two_ranks() {
+        assert!(run_p2p_ring(1, Duration::from_millis(10)).is_err());
     }
 
     #[test]

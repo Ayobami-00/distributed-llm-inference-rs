@@ -24,6 +24,11 @@ checkpoints use safetensors for weights.
 Elapsed time from generation request entry through completion, including artifact resolution and
 model loading.
 
+## Communicator
+
+The tensor-level interface owned by one rank. It converts Candle tensors into owned packets before
+calling a transport and reconstructs received packets as new CPU tensors.
+
 ## Decode
 
 The generation phase after prefill. Each forward call consumes one previously generated token,
@@ -65,6 +70,11 @@ recomputation of the entire prefix on each decode step.
 
 Unnormalized scores over the vocabulary. The largest logit is the greedy next token.
 
+## Message tag
+
+A caller-selected integer that distinguishes point-to-point messages between the same rank pair.
+`recv` matches both the source rank and tag; packets with other tags remain pending.
+
 ## MHA
 
 Multi-head attention, where every query head has its own key and value head (`K = Q`).
@@ -85,8 +95,13 @@ the first generated token.
 
 ## Rank
 
-One participant in distributed execution. The baseline has a single participant, rank 0, and
-records that identity in plans, events, and reports.
+One participant in distributed execution. Generation remains on rank 0. In the v0.2 communication
+path, each rank is hosted by one worker thread and owns one logical CPU device.
+
+## Ring exchange
+
+A point-to-point pattern in which rank `r` sends to the next rank and receives from the previous
+rank, with both peer calculations wrapping around at `world_size`.
 
 ## RMSNorm
 
@@ -117,6 +132,11 @@ punctuation, whitespace, or control markers.
 The model-specific conversion between text and token IDs. Chat-template rendering occurs before
 encoding.
 
+## Transport
+
+The boundary that moves owned, tagged tensor packets between ranks. v0.2 provides an in-memory
+channel implementation; TCP is deferred to a later checkpoint.
+
 ## TTFT
 
 Time to first token. In this implementation it includes tokenization and post-load work through
@@ -126,3 +146,8 @@ prefill and first-token selection, but excludes artifact resolution and model lo
 
 Reusing the token embedding matrix as the LM-head matrix. A tied model does not store a separate
 `lm_head.weight`.
+
+## World size
+
+The number of ranks participating in one communication world. Valid global ranks are the
+contiguous integers from zero through `world_size - 1`.
