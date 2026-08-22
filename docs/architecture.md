@@ -2,7 +2,8 @@
 
 `v0.1-single` remains the control experiment for model execution. All model weights, compute, KV
 state, token selection, and generation reporting belong to rank 0. `v0.2-collectives` adds a
-separate communication path with multiple logical ranks; it does not distribute model execution.
+separate communication path with logical ranks; `v0.3-tcp` gives each rank its own process and
+Docker container. Neither checkpoint distributes model execution.
 
 ```text
 world_size = 1
@@ -18,6 +19,12 @@ For the in-memory point-to-point path:
 one rank = one worker thread = one logical CPU device
 ```
 
+For the TCP Docker path:
+
+```text
+one rank = one process = one container = one logical CPU device
+```
+
 ## Workspace boundaries
 
 ```mermaid
@@ -25,7 +32,9 @@ flowchart LR
     User[User or shell] --> CLI[dlir-cli]
     CLI --> Runtime[dlir-runtime]
     CLI --> Collectives[dlir-collectives]
+    CLI --> Docker[Docker CLI and cgroups]
     Collectives --> Channels[Rank-pair FIFO channels]
+    Collectives --> TCP[Full-mesh TCP sockets]
     Collectives --> Candle[Candle CPU/F32 tensors]
     Runtime --> Registry[Registry and planning]
     Runtime --> Artifacts[Artifact validation]
@@ -43,8 +52,10 @@ and collectives crates are independent in v0.2 because model generation still ha
 | Module | Responsibility | Main concepts |
 | --- | --- | --- |
 | [`cli/main.rs`](../crates/cli/src/main.rs) | Parse arguments; render text/JSON; stream completion | Interface boundary, stdout/stderr |
+| [`cli/launch.rs`](../crates/cli/src/launch.rs) | Plan resources and manage Docker rank processes | Container lifecycle, cgroups |
 | [`collectives/lib.rs`](../crates/collectives/src/lib.rs) | Export the p2p API | Rank and transport boundary |
 | [`collectives/in_memory.rs`](../crates/collectives/src/in_memory.rs) | Connect rank pairs with channels | FIFO messages, tags, timeouts |
+| [`collectives/tcp.rs`](../crates/collectives/src/tcp.rs) | Rendezvous and connect rank processes | TCP framing, peer mesh, barrier |
 | [`collectives/tensor.rs`](../crates/collectives/src/tensor.rs) | Copy tensors into owned packets | Dtype, shape, values |
 | [`collectives/runner.rs`](../crates/collectives/src/runner.rs) | Run and join rank workers | Thread ownership, failure propagation |
 | [`registry.rs`](../crates/runtime/src/registry.rs) | Describe the only accepted models | Reproducibility, architecture contract |
@@ -86,6 +97,37 @@ Every rank sends before receiving. This is safe because the in-memory channels a
 tensor packet owns its shape and values, so receiving constructs a new Candle tensor rather than
 sharing the sender's tensor handle. See
 [Ranks and point-to-point communication](ranks-and-point-to-point.md).
+
+## TCP Docker flow
+
+```mermaid
+sequenceDiagram
+    participant L as dlir launch
+    participant D as Docker Engine
+    participant R0 as rank 0 container
+    participant RN as rank N container
+
+    L->>D: inspect engine CPU and memory
+    L->>D: create labelled bridge network
+    L->>D: run one constrained container per rank
+    R0->>R0: verify cgroup limits and bind rendezvous
+    RN->>RN: verify cgroup limits and bind peer listener
+    RN->>R0: register rank and advertised address
+    R0-->>RN: ordered peer table
+    R0->>RN: versioned full-mesh handshake
+    RN-->>R0: peer identity acknowledged
+    RN->>R0: startup barrier arrival
+    R0-->>RN: startup barrier release
+    R0->>RN: tagged tensor ring traffic
+    RN->>R0: completion barrier arrival
+    R0-->>RN: completion barrier release
+    R0-->>L: schema-v1 rank report
+    RN-->>L: schema-v1 rank report
+    L->>D: remove scoped containers and network
+```
+
+See [TCP rendezvous and barrier](tcp-rendezvous-and-barrier.md) and
+[Docker resource topologies](docker-topologies.md).
 
 ## Inspection flow
 
@@ -178,6 +220,10 @@ The implementation defends these properties at module boundaries:
 - Point-to-point peers are distinct ranks in that world.
 - Rank boundaries transfer owned CPU/F32 tensor values, never shared tensor handles.
 - A receive matches both source rank and message tag under one total deadline.
+- Rendezvous accepts one registration for every contiguous rank and one run ID.
+- A TCP world owns one bidirectional connection for every distinct rank pair.
+- Barrier generations advance only after every rank arrives.
+- Docker launches pass only when requested and observed cgroup limits agree.
 
 These invariants turn accidental mismatches into explicit errors close to their source. Unit tests
 beside the owning modules exercise the corresponding success and failure paths.

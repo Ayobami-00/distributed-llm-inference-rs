@@ -9,6 +9,21 @@ Producing text by repeatedly predicting one next token and feeding that token ba
 A collection of independent input sequences processed together. `v0.1-single` fixes batch size to
 one.
 
+## Barrier
+
+A reusable synchronization point that releases a generation only after every rank has arrived.
+The TCP implementation uses rank 0 to collect arrivals and send releases.
+
+## Cgroup
+
+The Linux kernel mechanism Docker uses to enforce CPU quotas and memory limits. Each rank reads
+its effective cgroup values and compares them with the launch plan.
+
+## Container
+
+The isolated Linux environment hosting exactly one rank process in v0.3. Containers share one
+trusted Docker Engine and private bridge network.
+
 ## Causal mask
 
 An attention mask preventing a token from reading positions to its right. It preserves the
@@ -96,7 +111,13 @@ the first generated token.
 ## Rank
 
 One participant in distributed execution. Generation remains on rank 0. In the v0.2 communication
-path, each rank is hosted by one worker thread and owns one logical CPU device.
+path, each rank is hosted by one worker thread. In the v0.3 TCP path, each rank owns one process
+inside one Docker container.
+
+## Rendezvous
+
+The startup phase in which ranks register their identity and advertised listener address with
+rank 0 and receive the same ordered peer table.
 
 ## Ring exchange
 
@@ -132,10 +153,15 @@ punctuation, whitespace, or control markers.
 The model-specific conversion between text and token IDs. Chat-template rendering occurs before
 encoding.
 
+## TCP
+
+A reliable ordered byte stream. `TcpTransport` adds explicit message framing because TCP itself
+does not preserve application message boundaries.
+
 ## Transport
 
 The boundary that moves owned, tagged tensor packets between ranks. v0.2 provides an in-memory
-channel implementation; TCP is deferred to a later checkpoint.
+channel implementation; v0.3 adds a versioned full-mesh TCP implementation.
 
 ## TTFT
 

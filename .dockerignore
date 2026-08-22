@@ -1,0 +1,6 @@
+.git
+.github
+target
+run.json
+*.log
+.DS_Store

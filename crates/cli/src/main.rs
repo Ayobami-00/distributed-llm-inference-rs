@@ -1,9 +1,11 @@
 //! Command-line presentation layer for the dlir inference laboratory.
 //!
 //! The binary converts CLI arguments into runtime requests, renders model, inspection, and
-//! point-to-point results, streams assistant text through an event observer, writes optional JSON
-//! reports, and owns exit behavior. Inference remains in `dlir-runtime`; communication remains in
-//! `dlir-collectives`.
+//! point-to-point results, launches Docker rank processes, streams assistant text through an event
+//! observer, writes optional JSON reports, and owns exit behavior. Inference remains in
+//! `dlir-runtime`; communication remains in `dlir-collectives`.
+
+mod launch;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
@@ -21,6 +23,8 @@ use std::{
     time::Duration,
 };
 
+use launch::{CpuAmount, LaunchRequest, RankRequest};
+
 const P2P_RECEIVE_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Parser)]
@@ -37,6 +41,78 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Start one TCP rank per Docker container and verify the topology.
+    Launch {
+        /// Number of rank containers; must be between 2 and 64.
+        #[arg(long)]
+        nproc: usize,
+        /// Total CPU quota to divide equally, with up to three decimal places.
+        #[arg(long)]
+        total_cpus: CpuAmount,
+        /// Total memory to divide equally using bytes, KiB, MiB, or GiB.
+        #[arg(long)]
+        total_memory: String,
+        /// Docker image to reuse or build when missing.
+        #[arg(long, default_value = "dlir:v0.3-tcp")]
+        image: String,
+        /// Directory containing the checked-in Dockerfile and workspace.
+        #[arg(long, default_value = ".")]
+        build_context: PathBuf,
+        /// Force a no-cache image rebuild.
+        #[arg(long)]
+        rebuild: bool,
+        /// Stable run identifier; generated when omitted.
+        #[arg(long)]
+        run_id: Option<String>,
+        /// Rendezvous and connection-establishment deadline.
+        #[arg(long, default_value_t = 30)]
+        startup_timeout_seconds: u64,
+        /// Point-to-point receive and barrier deadline.
+        #[arg(long, default_value_t = 10)]
+        operation_timeout_seconds: u64,
+        /// Render human-readable text or schema-versioned JSON.
+        #[arg(long, value_enum, default_value_t)]
+        format: OutputFormat,
+        /// Retain stopped containers and the run network for inspection.
+        #[arg(long)]
+        keep_containers: bool,
+    },
+    /// Run exactly one TCP rank; normally invoked as container PID 1 by `dlir launch`.
+    Rank {
+        /// Zero-based global rank.
+        #[arg(long)]
+        rank: usize,
+        /// Number of ranks in the rendezvous world.
+        #[arg(long)]
+        world_size: usize,
+        /// Run identity shared by every rank.
+        #[arg(long)]
+        run_id: String,
+        /// Rank-0 rendezvous address reachable by every container.
+        #[arg(long)]
+        rendezvous_addr: String,
+        /// Rank-0-only local rendezvous bind address.
+        #[arg(long)]
+        rendezvous_bind_addr: Option<String>,
+        /// Local peer-listener bind address.
+        #[arg(long)]
+        listen_addr: String,
+        /// Peer-listener address advertised through rendezvous.
+        #[arg(long)]
+        advertise_addr: String,
+        /// Rendezvous and connection-establishment deadline.
+        #[arg(long, default_value_t = 30)]
+        startup_timeout_seconds: u64,
+        /// Point-to-point receive and barrier deadline.
+        #[arg(long, default_value_t = 10)]
+        operation_timeout_seconds: u64,
+        /// CPU quota the launcher expects this cgroup to expose, in millicpus.
+        #[arg(long, requires = "expected_memory_bytes")]
+        expected_cpu_millis: Option<u64>,
+        /// Memory maximum the launcher expects this cgroup to expose.
+        #[arg(long, requires = "expected_cpu_millis")]
+        expected_memory_bytes: Option<u64>,
+    },
     /// Exchange copied CPU/F32 tensors between in-memory rank workers.
     P2p {
         /// Number of logical ranks in the ring; must be at least two.
@@ -114,6 +190,56 @@ enum DeviceArg {
 
 fn main() -> Result<()> {
     match Cli::parse().command {
+        Command::Launch {
+            nproc,
+            total_cpus,
+            total_memory,
+            image,
+            build_context,
+            rebuild,
+            run_id,
+            startup_timeout_seconds,
+            operation_timeout_seconds,
+            format,
+            keep_containers,
+        } => launch::run_launch(LaunchRequest {
+            nproc,
+            total_cpus,
+            total_memory,
+            image,
+            build_context,
+            rebuild,
+            run_id,
+            startup_timeout: Duration::from_secs(startup_timeout_seconds),
+            operation_timeout: Duration::from_secs(operation_timeout_seconds),
+            json: matches!(format, OutputFormat::Json),
+            keep_containers,
+        }),
+        Command::Rank {
+            rank,
+            world_size,
+            run_id,
+            rendezvous_addr,
+            rendezvous_bind_addr,
+            listen_addr,
+            advertise_addr,
+            startup_timeout_seconds,
+            operation_timeout_seconds,
+            expected_cpu_millis,
+            expected_memory_bytes,
+        } => launch::run_rank(RankRequest {
+            rank,
+            world_size,
+            run_id,
+            rendezvous_addr,
+            rendezvous_bind_addr,
+            listen_addr,
+            advertise_addr,
+            startup_timeout: Duration::from_secs(startup_timeout_seconds),
+            operation_timeout: Duration::from_secs(operation_timeout_seconds),
+            expected_cpu_millis,
+            expected_memory_bytes,
+        }),
         Command::P2p { world_size, format } => run_p2p(world_size, format),
         Command::Models { format } => print_models(format),
         Command::Inspect {

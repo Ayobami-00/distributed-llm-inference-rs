@@ -1,10 +1,12 @@
 //! In-memory transport whose ranks exchange owned messages through FIFO channels.
 
 use crate::transport::MessageFrame;
-use crate::{CollectivesError, MessageTag, Rank, Result, TensorPacket, Transport};
+use crate::{
+    BarrierTransport, CollectivesError, MessageTag, Rank, Result, TensorPacket, Transport,
+};
 use std::{
     collections::VecDeque,
-    sync::{Mutex, mpsc},
+    sync::{Arc, Condvar, Mutex, mpsc},
     time::{Duration, Instant},
 };
 
@@ -12,13 +14,90 @@ use std::{
 ///
 /// Endpoints are created together with [`create_in_memory_world`]. Each directional rank pair has
 /// its own unbounded FIFO channel. Pending messages preserve packets whose tag is not the one a
-/// caller is currently receiving.
+/// caller is currently receiving. All endpoints also share a deadline-aware reusable barrier.
 pub struct InMemoryTransport {
     rank: Rank,
     senders: Vec<Option<mpsc::Sender<MessageFrame>>>,
     receivers: Vec<Option<Mutex<mpsc::Receiver<MessageFrame>>>>,
     pending: Mutex<VecDeque<MessageFrame>>,
     receive_timeout: Duration,
+    barrier: Arc<InMemoryBarrier>,
+}
+
+#[derive(Default)]
+struct BarrierState {
+    generation: u64,
+    arrived: usize,
+    broken: bool,
+}
+
+struct InMemoryBarrier {
+    world_size: usize,
+    state: Mutex<BarrierState>,
+    changed: Condvar,
+}
+
+impl InMemoryBarrier {
+    fn new(world_size: usize) -> Self {
+        Self {
+            world_size,
+            state: Mutex::new(BarrierState::default()),
+            changed: Condvar::new(),
+        }
+    }
+
+    fn wait(&self, rank: usize, timeout: Duration) -> Result<()> {
+        let started = Instant::now();
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| CollectivesError::Synchronization { rank })?;
+        let generation = state.generation;
+        if state.broken {
+            return Err(CollectivesError::BarrierBroken { rank, generation });
+        }
+        state.arrived += 1;
+        if state.arrived == self.world_size {
+            state.arrived = 0;
+            state.generation = state.generation.checked_add(1).ok_or_else(|| {
+                CollectivesError::Protocol("barrier generation overflow".to_owned())
+            })?;
+            self.changed.notify_all();
+            return Ok(());
+        }
+
+        loop {
+            let Some(remaining) = timeout.checked_sub(started.elapsed()) else {
+                state.broken = true;
+                self.changed.notify_all();
+                return Err(CollectivesError::BarrierTimeout {
+                    rank,
+                    generation,
+                    timeout,
+                });
+            };
+            let (next, wait) = self
+                .changed
+                .wait_timeout(state, remaining)
+                .map_err(|_| CollectivesError::Synchronization { rank })?;
+            state = next;
+            if state.generation != generation {
+                return Ok(());
+            }
+            if state.broken {
+                return Err(CollectivesError::BarrierBroken { rank, generation });
+            }
+            if wait.timed_out() {
+                state.broken = true;
+                self.changed.notify_all();
+                return Err(CollectivesError::BarrierTimeout {
+                    rank,
+                    generation,
+                    timeout,
+                });
+            }
+        }
+    }
 }
 
 /// Creates exactly one in-memory transport endpoint for every rank in `world_size`.
@@ -39,6 +118,7 @@ pub fn create_in_memory_world(
     let mut receiver_rows: Vec<Vec<Option<mpsc::Receiver<MessageFrame>>>> = (0..world_size)
         .map(|_| (0..world_size).map(|_| None).collect())
         .collect();
+    let barrier = Arc::new(InMemoryBarrier::new(world_size));
 
     for (source, sender_row) in sender_rows.iter_mut().enumerate() {
         for (destination, receiver_row) in receiver_rows.iter_mut().enumerate() {
@@ -65,9 +145,17 @@ pub fn create_in_memory_world(
                     .collect(),
                 pending: Mutex::new(VecDeque::new()),
                 receive_timeout,
+                barrier: Arc::clone(&barrier),
             })
         })
         .collect()
+}
+
+impl BarrierTransport for InMemoryTransport {
+    fn barrier(&self) -> Result<()> {
+        self.barrier
+            .wait(self.rank.global_rank(), self.receive_timeout)
+    }
 }
 
 impl Transport for InMemoryTransport {

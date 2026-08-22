@@ -29,3 +29,37 @@ jobs:
       - run: cargo doc --workspace --no-deps --document-private-items --locked
         env:
           RUSTDOCFLAGS: "-D warnings"
+
+  docker:
+    name: docker tcp topology
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.85"
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --locked -p dlir-cli
+      - run: docker build --tag dlir:v0.3-tcp .
+      - name: Launch two constrained TCP ranks
+        run: |
+          ./target/debug/dlir launch \
+            --nproc 2 \
+            --total-cpus 1 \
+            --total-memory 512MiB \
+            --image dlir:v0.3-tcp \
+            --run-id ci-${{ github.run_id }}-${{ github.run_attempt }} \
+            --format json > /tmp/dlir-v0.3-report.json
+          jq -e '
+            .success == true and
+            .world_size == 2 and
+            .resources.per_rank_cpu_millis == 500 and
+            .resources.per_rank_memory_bytes == 268435456 and
+            ([.ranks[].report.resource_verification] | all(. == "passed")) and
+            ([.ranks[].report.startup_barrier] | all) and
+            ([.ranks[].report.completion_barrier] | all)
+          ' /tmp/dlir-v0.3-report.json
+      - name: Verify scoped Docker cleanup
+        run: |
+          test -z "$(docker ps --all --quiet --filter label=io.dlir.run_id=ci-${{ github.run_id }}-${{ github.run_attempt }})"
+          test -z "$(docker network ls --quiet --filter label=io.dlir.run_id=ci-${{ github.run_id }}-${{ github.run_attempt }})"

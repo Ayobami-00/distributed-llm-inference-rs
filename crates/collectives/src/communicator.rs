@@ -1,11 +1,18 @@
 //! Candle tensor operations layered over an owned-message transport.
 
-use crate::{MessageTag, Rank, Result, TensorPacket, Transport};
+use crate::{BarrierTransport, MessageTag, Rank, Result, TensorPacket, Transport};
 use candle_core::Tensor;
 
 /// Tensor-level point-to-point communicator for one rank.
 pub struct Communicator<T: Transport> {
     transport: T,
+}
+
+impl<T: BarrierTransport> Communicator<T> {
+    /// Blocks until every rank reaches the current barrier generation.
+    pub fn barrier(&self) -> Result<()> {
+        self.transport.barrier()
+    }
 }
 
 impl<T: Transport> Communicator<T> {

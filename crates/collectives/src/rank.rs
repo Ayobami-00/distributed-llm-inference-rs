@@ -5,8 +5,8 @@ use std::fmt;
 
 /// Identity and world membership of one logical distributed worker.
 ///
-/// Valid ranks form the contiguous range `0..world_size`. In v0.2 each rank is hosted by one
-/// worker thread and owns one logical CPU device.
+/// Valid ranks form the contiguous range `0..world_size`. The in-memory backend hosts ranks in
+/// worker threads; the TCP Docker backend gives each rank its own process and container.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Rank {
     global_rank: usize,
