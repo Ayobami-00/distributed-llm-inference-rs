@@ -1,19 +1,22 @@
 # distributed-llm-inference-rs
 
 `dlir` is a learning-oriented distributed LLM inference runtime written in Rust. The
-`v0.1-single` checkpoint establishes a deliberately small baseline: one model, one process,
-one CPU device, batch size one, and deterministic greedy generation.
+`v0.1-single` checkpoint establishes a deliberately small inference baseline. The
+`v0.2-collectives` checkpoint adds logical ranks and copied point-to-point tensor communication
+without changing the single-rank model execution path.
 
-The workspace contains two crates:
+The workspace contains three crates:
 
 - `dlir-runtime` owns the model registry, artifact validation, Llama forward path, KV cache,
   memory planning, generation, events, and reports.
+- `dlir-collectives` owns rank identity, in-memory transport, tensor packets, send/receive, and
+  the deterministic point-to-point demonstration.
 - `dlir-cli` provides the `dlir` command and owns terminal/file output and exit behavior.
 
 ## Documentation
 
-The [v0.1 documentation](docs/README.md) connects inference theory, tensor shapes, runtime
-behavior, Rust modules, and correctness tests. Two reading paths are available:
+The [documentation hub](docs/README.md) connects inference and communication theory to tensor
+shapes, runtime behavior, Rust modules, and correctness tests. Two reading paths are available:
 
 - Start with [architecture and request flow](docs/architecture.md) for a concept-first tour.
 - Start with the [code-reading guide](docs/code-reading-guide.md) to follow one generation request
@@ -21,7 +24,8 @@ behavior, Rust modules, and correctness tests. Two reading paths are available:
 
 The guides cover the [model registry and artifact boundary](docs/registry-artifacts-and-prompts.md),
 the [owned Llama forward pass](docs/llama-forward-pass.md),
-[KV-cached generation](docs/kv-cache-and-generation.md), and the rest of the v0.1 execution path.
+[KV-cached generation](docs/kv-cache-and-generation.md), and
+[ranks and point-to-point communication](docs/ranks-and-point-to-point.md).
 
 ## Build
 
@@ -36,6 +40,32 @@ Candle is pinned to 0.11.0. The relevant Candle crates are vendored with narrow 
 patches for Rust 1.85: an unused AArch64 FP16 specialization is disabled, integer divisibility
 checks use stable arithmetic, and Candle's ZIP dependency is pinned to its API-compatible
 Rust-1.83 release. These changes do not affect the CPU/F32 execution path supported here.
+
+## Point-to-point tensor exchange
+
+The first distributed foundation uses one worker thread and one logical CPU device per rank:
+
+```text
+one rank = one worker thread = one logical CPU device
+```
+
+Run a deterministic two-rank exchange:
+
+```console
+dlir p2p --world-size 2
+```
+
+Rank 0 sends `[1, 2, 3, 4]` to rank 1 while rank 1 sends `[5, 6, 7, 8]` back to rank 0. For larger
+world sizes every rank sends to its next neighbor and receives from its previous neighbor:
+
+```console
+dlir p2p --world-size 4 --format json
+```
+
+The backend transfers owned CPU/F32 tensor packets through in-memory FIFO channels. It copies
+shape and values rather than sharing Candle tensor handles across rank boundaries. The JSON result
+uses schema version 1 and contains deterministic, rank-ordered inputs, outputs, and correctness
+verdicts. No model artifacts or network access are involved.
 
 ## Supported models
 
@@ -132,12 +162,13 @@ includes all work. Candle's device is synchronized around measured model operati
 
 ## Test
 
-The normal suite is fully offline and uses tiny deterministic synthetic Llama fixtures:
+The normal suite is fully offline. It uses tiny deterministic synthetic Llama fixtures and
+threaded point-to-point communication tests:
 
 ```console
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --no-deps -- -D warnings
-cargo test --workspace --all-targets
+cargo test --workspace --all-targets --locked
 cargo test --workspace --doc --locked
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --document-private-items --locked
 ```
@@ -162,8 +193,8 @@ the remaining names describe the planned progression and may be refined as the w
 | Tag | Status | What it contains |
 | --- | --- | --- |
 | [`v0.1-single`](https://github.com/Ayobami-00/distributed-llm-inference-rs/tree/v0.1-single) | Released | A single CPU process and device; the closed model registry; model inspection and memory planning; an owned Llama forward path; prefill and cached decode; greedy generation; structured events, metrics, and JSON reports. |
-| `v0.2-collectives` | Planned | In-memory ranks, point-to-point send/receive, and correctness-first native collective algorithms tested against single-process tensor results. |
-| `v0.3-tcp` | Planned | One rank per process, TCP transport, rendezvous, process startup, and reproducible multi-container CPU topologies. |
+| [`v0.2-collectives`](https://github.com/Ayobami-00/distributed-llm-inference-rs/tree/v0.2-collectives) | Released | Thread-hosted logical ranks; an in-memory transport; copied CPU/F32 tensor packets; tagged point-to-point send/receive; deterministic text and JSON ring demonstrations; and offline communication correctness tests. |
+| `v0.3-tcp` | Planned | One rank per process, TCP transport, rendezvous, barrier synchronization, process startup, and reproducible multi-container CPU topologies. |
 | `v0.4-pipeline` | Planned | Pipeline-stage model partitioning, rank-local weight loading, activation transfer between stages, and autoregressive token feedback. |
 | `v0.5-tensor` | Planned | Column- and row-parallel linear layers, sharded attention and MLP execution, tensor-parallel collectives, and distributed generation. |
 | `v0.6-hybrid` | Planned | Process groups and combined tensor and pipeline parallelism, including topology-aware memory and communication measurements. |

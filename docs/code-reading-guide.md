@@ -1,7 +1,7 @@
 # Code-reading guide
 
-This guide follows one `dlir generate` request in execution order. Read the linked symbol, then use
-the adjacent theory link when the purpose of an operation is unfamiliar.
+This guide contains two executable paths. The first follows `dlir generate`; the second follows
+the smaller `dlir p2p` communication path.
 
 ## 1. CLI parsing and request construction
 
@@ -124,3 +124,26 @@ CLI Command::Inspect
 ```
 
 No artifact, tokenizer, Candle device, model, or cache object is created.
+
+## Point-to-point path
+
+For `dlir p2p --world-size 2`, follow this order:
+
+1. `Command::P2p` in [`cli/main.rs`](../crates/cli/src/main.rs) selects text or JSON and calls
+   `run_p2p_ring` with a five-second receive deadline.
+2. `run_p2p_ring` in [`collectives/report.rs`](../crates/collectives/src/report.rs) defines each
+   rank's deterministic tensor and its previous/next ring peers.
+3. `run_in_memory` in [`collectives/runner.rs`](../crates/collectives/src/runner.rs) creates the
+   world, gives one exclusive endpoint to each worker thread, joins every worker, and restores
+   rank ordering.
+4. `Communicator::send_tensor` converts the Candle tensor into a `TensorPacket`. Follow the copy
+   through [`collectives/tensor.rs`](../crates/collectives/src/tensor.rs).
+5. `InMemoryTransport::send` places the owned packet on the destination's source-specific FIFO
+   channel. `recv` matches source and tag, retaining other tags in its pending queue.
+6. `Communicator::recv_tensor` reconstructs a new CPU tensor. The worker compares it with the
+   deterministic single-process values for the source rank.
+7. The CLI renders the ordered schema-v1 `P2pReport`; a failed verification returns a nonzero exit.
+
+No registry, artifact, tokenizer, Llama, cache, generation report, TCP socket, or process launcher
+is involved. The conceptual boundary and failure cases are described in
+[Ranks and point-to-point communication](ranks-and-point-to-point.md).

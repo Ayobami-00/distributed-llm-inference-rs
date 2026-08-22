@@ -1,7 +1,8 @@
 # Architecture and request flow
 
-`v0.1-single` is the control experiment for later distributed checkpoints. All model weights,
-compute, KV state, token selection, and reporting belong to rank 0.
+`v0.1-single` remains the control experiment for model execution. All model weights, compute, KV
+state, token selection, and generation reporting belong to rank 0. `v0.2-collectives` adds a
+separate communication path with multiple logical ranks; it does not distribute model execution.
 
 ```text
 world_size = 1
@@ -11,28 +12,41 @@ PP         = 1
 EP         = 1
 ```
 
+For the in-memory point-to-point path:
+
+```text
+one rank = one worker thread = one logical CPU device
+```
+
 ## Workspace boundaries
 
 ```mermaid
 flowchart LR
     User[User or shell] --> CLI[dlir-cli]
     CLI --> Runtime[dlir-runtime]
+    CLI --> Collectives[dlir-collectives]
+    Collectives --> Channels[Rank-pair FIFO channels]
+    Collectives --> Candle[Candle CPU/F32 tensors]
     Runtime --> Registry[Registry and planning]
     Runtime --> Artifacts[Artifact validation]
     Runtime --> Model[Owned Llama and KV cache]
     Runtime --> Reports[Events and reports]
     Artifacts --> Hub[Hugging Face cache]
-    Model --> Candle[Candle tensors and neural-network primitives]
+    Model --> Candle
 ```
 
-`dlir-cli` depends on `dlir-runtime`; the runtime never depends on the CLI. This direction lets a
-future interface consume the same requests, events, and reports without duplicating inference.
+`dlir-cli` depends on both first-party libraries; neither library depends on the CLI. The runtime
+and collectives crates are independent in v0.2 because model generation still has world size one.
 
 ## First-party module map
 
 | Module | Responsibility | Main concepts |
 | --- | --- | --- |
 | [`cli/main.rs`](../crates/cli/src/main.rs) | Parse arguments; render text/JSON; stream completion | Interface boundary, stdout/stderr |
+| [`collectives/lib.rs`](../crates/collectives/src/lib.rs) | Export the p2p API | Rank and transport boundary |
+| [`collectives/in_memory.rs`](../crates/collectives/src/in_memory.rs) | Connect rank pairs with channels | FIFO messages, tags, timeouts |
+| [`collectives/tensor.rs`](../crates/collectives/src/tensor.rs) | Copy tensors into owned packets | Dtype, shape, values |
+| [`collectives/runner.rs`](../crates/collectives/src/runner.rs) | Run and join rank workers | Thread ownership, failure propagation |
 | [`registry.rs`](../crates/runtime/src/registry.rs) | Describe the only accepted models | Reproducibility, architecture contract |
 | [`artifacts.rs`](../crates/runtime/src/artifacts.rs) | Resolve and validate Hub files | Staged loading, trust boundary |
 | [`prompt.rs`](../crates/runtime/src/prompt.rs) | Render fixed chat templates | Prompt representation, special tokens |
@@ -43,6 +57,35 @@ future interface consume the same requests, events, and reports without duplicat
 | [`generation.rs`](../crates/runtime/src/generation.rs) | Orchestrate artifacts, prefill, decode, and timing | Request lifecycle |
 | [`report.rs`](../crates/runtime/src/report.rs) | Define stable events and report records | Observability contract |
 | [`error.rs`](../crates/runtime/src/error.rs) | Describe expected failure categories | Fail-fast validation |
+
+## Point-to-point flow
+
+```mermaid
+sequenceDiagram
+    participant C as dlir-cli
+    participant W as run_in_memory
+    participant R0 as rank 0 thread
+    participant T as InMemoryTransport
+    participant R1 as rank 1 thread
+
+    C->>W: run_p2p_ring(world_size=2)
+    W->>R0: Communicator(rank 0)
+    W->>R1: Communicator(rank 1)
+    R0->>R0: create [1, 2, 3, 4]
+    R1->>R1: create [5, 6, 7, 8]
+    R0->>T: send(rank 1, tag 0, owned packet)
+    R1->>T: send(rank 0, tag 0, owned packet)
+    T-->>R0: recv(rank 1, tag 0)
+    T-->>R1: recv(rank 0, tag 0)
+    R0-->>W: verified rank report
+    R1-->>W: verified rank report
+    W-->>C: ordered P2pReport
+```
+
+Every rank sends before receiving. This is safe because the in-memory channels are unbounded. The
+tensor packet owns its shape and values, so receiving constructs a new Candle tensor rather than
+sharing the sender's tensor handle. See
+[Ranks and point-to-point communication](ranks-and-point-to-point.md).
 
 ## Inspection flow
 
@@ -131,6 +174,10 @@ The implementation defends these properties at module boundaries:
 - Only the final sequence position is projected to next-token logits.
 - All events and memory plans identify rank 0.
 - JSON report shapes are versioned independently of human text output.
+- A communication rank belongs to exactly one validated world.
+- Point-to-point peers are distinct ranks in that world.
+- Rank boundaries transfer owned CPU/F32 tensor values, never shared tensor handles.
+- A receive matches both source rank and message tag under one total deadline.
 
 These invariants turn accidental mismatches into explicit errors close to their source. Unit tests
 beside the owning modules exercise the corresponding success and failure paths.
