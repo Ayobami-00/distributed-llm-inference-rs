@@ -43,13 +43,13 @@ pub enum CollectivesError {
         /// Rejected world size.
         world_size: usize,
     },
-    /// v0.2 transfers only CPU tensors.
+    /// The implemented transports transfer only CPU tensors.
     #[error("point-to-point transfer supports only CPU tensors, got {device}")]
     UnsupportedTensorDevice {
         /// Debug representation of the supplied Candle device.
         device: String,
     },
-    /// v0.2 transfers only F32 elements.
+    /// The implemented transports transfer only F32 elements.
     #[error("point-to-point transfer supports only f32 tensors, got {dtype}")]
     UnsupportedTensorDType {
         /// Display representation of the supplied Candle dtype.
@@ -107,6 +107,42 @@ pub enum CollectivesError {
         /// Configured total receive timeout.
         timeout: Duration,
     },
+    /// Not every rank reached a barrier before its total deadline.
+    #[error("rank {rank} timed out after {timeout:?} in barrier generation {generation}")]
+    BarrierTimeout {
+        /// Calling global rank.
+        rank: usize,
+        /// Reusable barrier generation.
+        generation: u64,
+        /// Configured total deadline.
+        timeout: Duration,
+    },
+    /// A previous participant failure made the current barrier generation unusable.
+    #[error("rank {rank} entered broken barrier generation {generation}")]
+    BarrierBroken {
+        /// Calling global rank.
+        rank: usize,
+        /// Broken barrier generation.
+        generation: u64,
+    },
+    /// A socket, listener, or stream operation failed.
+    #[error("{context}: {source}")]
+    Io {
+        /// Operation-specific context.
+        context: String,
+        /// Operating-system error.
+        #[source]
+        source: std::io::Error,
+    },
+    /// A peer sent an invalid or incompatible wire message.
+    #[error("protocol error: {0}")]
+    Protocol(String),
+    /// Rendezvous failed before the peer world was established.
+    #[error("rendezvous error: {0}")]
+    Rendezvous(String),
+    /// JSON control-plane encoding or decoding failed.
+    #[error("control-plane JSON error: {0}")]
+    ControlJson(#[from] serde_json::Error),
     /// A mutex was poisoned because another worker panicked while holding it.
     #[error("rank {rank} communication state was poisoned")]
     Synchronization {

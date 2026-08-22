@@ -1,8 +1,9 @@
-//! Point-to-point communication foundation for the distributed inference laboratory.
+//! Point-to-point and barrier communication for the distributed inference laboratory.
 //!
 //! `v0.2-collectives` introduces logical ranks hosted by worker threads, an in-memory transport,
-//! and copied CPU/F32 tensor send and receive operations. The transport boundary contains no
-//! collective algorithm or model inference behavior.
+//! and copied CPU/F32 tensor send and receive operations. `v0.3-tcp` adds one rank per process,
+//! rank-0 rendezvous, full-mesh TCP streams, and reusable barrier synchronization. Model inference
+//! remains single-rank.
 //!
 //! # Two-rank tensor exchange
 //!
@@ -29,20 +30,26 @@
 #![deny(missing_docs)]
 #![deny(rustdoc::broken_intra_doc_links)]
 
+mod barrier;
 mod communicator;
 mod error;
 mod in_memory;
 mod rank;
 mod report;
 mod runner;
+mod tcp;
 mod tensor;
 mod transport;
 
+pub use barrier::BarrierTransport;
 pub use communicator::Communicator;
 pub use error::{CollectivesError, Result};
 pub use in_memory::{InMemoryTransport, create_in_memory_world};
 pub use rank::{MessageTag, Rank};
 pub use report::{P2pReport, RankExchangeReport, TensorSummary, run_p2p_ring};
 pub use runner::run_in_memory;
+pub use tcp::{
+    DEFAULT_MAX_TENSOR_BYTES, PROTOCOL_VERSION, PeerInfo, TcpTransport, TcpTransportConfig,
+};
 pub use tensor::TensorPacket;
 pub use transport::Transport;

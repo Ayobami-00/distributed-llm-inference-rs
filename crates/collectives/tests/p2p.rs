@@ -1,7 +1,7 @@
 use candle_core::{Device, Tensor};
 use dlir_collectives::{
-    CollectivesError, MessageTag, TensorPacket, Transport, create_in_memory_world, run_in_memory,
-    run_p2p_ring,
+    BarrierTransport, CollectivesError, MessageTag, TensorPacket, Transport,
+    create_in_memory_world, run_in_memory, run_p2p_ring,
 };
 use std::time::Duration;
 
@@ -211,4 +211,30 @@ fn p2p_report_round_trips_through_json() {
     let json = serde_json::to_string(&report).unwrap();
     let decoded: dlir_collectives::P2pReport = serde_json::from_str(&json).unwrap();
     assert_eq!(decoded, report);
+}
+
+#[test]
+fn in_memory_barrier_is_reusable() {
+    let results = run_in_memory(4, TEST_TIMEOUT, |communicator| {
+        for _ in 0..8 {
+            communicator.barrier()?;
+        }
+        Ok(communicator.rank().global_rank())
+    })
+    .unwrap();
+    assert_eq!(results, vec![0, 1, 2, 3]);
+}
+
+#[test]
+fn in_memory_barrier_timeout_breaks_the_generation() {
+    let mut endpoints = create_in_memory_world(2, Duration::from_millis(10)).unwrap();
+    let rank_zero = endpoints.remove(0);
+    assert!(matches!(
+        rank_zero.barrier(),
+        Err(CollectivesError::BarrierTimeout { .. })
+    ));
+    assert!(matches!(
+        rank_zero.barrier(),
+        Err(CollectivesError::BarrierBroken { .. })
+    ));
 }
