@@ -126,18 +126,18 @@ sequenceDiagram
     H->>RF: read-only manifest + artifacts
     R0->>RM: startup barrier
     RM->>RF: startup barrier
-    R0->>R0: embed prompt; run local blocks
+    R0->>R0: embed prompt and run local blocks
     R0->>RM: prefill activation [1,S,H]
     RM->>RF: prefill activation [1,S,H]
-    RF->>RF: final norm; LM head; argmax
+    RF->>RF: final norm, LM head, and argmax
     RF->>R0: Token(step=0, token_id)
     R0->>RM: Decision(step=0, continue/stop)
     R0->>RF: Decision(step=0, continue/stop)
     loop while continuing
-        R0->>R0: embed previous token; cached local blocks
+        R0->>R0: embed previous token and run cached local blocks
         R0->>RM: decode activation [1,1,H]
         RM->>RF: decode activation [1,1,H]
-        RF->>RF: final norm; LM head; argmax
+        RF->>RF: final norm, LM head, and argmax
         RF->>R0: Token(step=N, token_id)
         R0->>RM: Decision(step=N, continue/stop)
         R0->>RF: Decision(step=N, continue/stop)

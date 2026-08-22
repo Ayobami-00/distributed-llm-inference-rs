@@ -158,7 +158,7 @@ sequenceDiagram
     participant RM as middle stage(s)
     participant RF as final stage
 
-    C->>C: validate/tokenize; partition; per-stage placement
+    C->>C: validate and tokenize, partition, and plan placement
     C->>C: resolve and validate checkpoint once
     C->>D: create constrained rank containers + read-only mounts
     R0->>RM: protocol-v2 rendezvous/full mesh/barrier
