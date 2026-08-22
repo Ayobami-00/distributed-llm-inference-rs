@@ -1,3 +1,9 @@
+//! Owned forward path for the unbiased, unscaled-RoPE Llama subset in the registry.
+//!
+//! The implementation covers token embeddings, pre-normalized transformer blocks, grouped-query
+//! causal self-attention, RoPE, SwiGLU, residual connections, final RMSNorm, and tied or untied
+//! output heads. Only final-position logits are returned.
+
 use super::KvCache;
 use crate::{DlirError, ModelConfig, Result};
 use candle_core::{DType, Device, IndexOp, Tensor};
@@ -72,12 +78,14 @@ impl CausalSelfAttention {
         cache: &mut KvCache,
     ) -> Result<Tensor> {
         let (batch, sequence, hidden) = input.dims3()?;
+        // [B, S, H] -> [B, Q, S, D]. Queries exist only for this forward call.
         let q = self
             .q_proj
             .forward(input)?
             .reshape((batch, sequence, self.num_attention_heads, self.head_dim))?
             .transpose(1, 2)?
             .contiguous()?;
+        // [B, S, H] -> [B, K, S, D]. K is the compact GQA KV-head count.
         let k = self
             .k_proj
             .forward(input)?
@@ -93,13 +101,16 @@ impl CausalSelfAttention {
 
         let q = rope.apply(&q, position)?;
         let k = rope.apply(&k, position)?;
+        // Append compact [B, K, S, D] chunks and retrieve [B, K, T, D] populated prefixes.
         let (k, v) = cache.append(layer, &k, &v)?;
+        // Attention needs a logical K/V head per query head. The persistent cache remains compact.
         let k = repeat_kv(&k, self.num_attention_heads / self.num_key_value_heads)?;
         let v = repeat_kv(&v, self.num_attention_heads / self.num_key_value_heads)?;
 
         let q = q.to_dtype(DType::F32)?;
         let k = k.to_dtype(DType::F32)?;
         let v = v.to_dtype(DType::F32)?;
+        // [B, Q, S, D] × [B, Q, D, T] -> [B, Q, S, T].
         let scores = (q.matmul(&k.t()?)? / (self.head_dim as f64).sqrt())?;
         let scores = if sequence > 1 {
             apply_causal_mask(&scores, position, sequence)?
@@ -133,6 +144,7 @@ fn apply_causal_mask(scores: &Tensor, position: usize, sequence: usize) -> Resul
     for query in 0..sequence {
         let absolute_query = position + query;
         for key in 0..key_length {
+            // A prefill query may see cached/current keys only through its absolute position.
             values.push(u8::from(key > absolute_query));
         }
     }
@@ -228,6 +240,7 @@ impl Block {
     }
 }
 
+/// Llama causal language model for the registry's supported architecture subset.
 #[derive(Debug)]
 pub struct Llama {
     embeddings: Embedding,
@@ -238,6 +251,10 @@ pub struct Llama {
 }
 
 impl Llama {
+    /// Loads all model components and precomputes RoPE tables to `capacity` positions.
+    ///
+    /// Tensor names and shapes are assumed to have passed artifact validation before a real
+    /// checkpoint-backed builder reaches this boundary.
     pub fn load(vb: VarBuilder<'_>, config: &ModelConfig, capacity: usize) -> Result<Self> {
         let embeddings = embedding(
             config.vocab_size,
@@ -263,6 +280,10 @@ impl Llama {
         })
     }
 
+    /// Runs prefill or cached decode and returns F32 logits for the final sequence position.
+    ///
+    /// `token_ids` must have shape `[1, sequence]`, `position` must equal `cache.len()`, and the
+    /// resulting populated length must not exceed cache capacity.
     pub fn forward(
         &self,
         token_ids: &Tensor,
@@ -292,11 +313,13 @@ impl Llama {
                 capacity: cache.capacity(),
             });
         }
+        // [1, S] token IDs -> [1, S, H] residual-stream vectors.
         let mut hidden = self.embeddings.forward(token_ids)?;
         for (layer, block) in self.blocks.iter().enumerate() {
             hidden = block.forward(&hidden, position, layer, &self.rope, cache)?;
         }
         let hidden = self.final_norm.forward(&hidden)?;
+        // Autoregressive generation consumes only the distribution after the last input position.
         let last = hidden.i((.., sequence - 1, ..))?.contiguous()?;
         Ok(self.lm_head.forward(&last)?.to_dtype(DType::F32)?)
     }

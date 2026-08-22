@@ -1,3 +1,9 @@
+//! Resolution and validation of pinned Hugging Face model artifacts.
+//!
+//! Small configuration/tokenizer files are resolved first. Checkpoint weights are requested only
+//! after prompt-dependent memory placement succeeds. Both metadata and the safetensor manifest
+//! must exactly match the compiled [`ModelSpec`].
+
 use crate::{DlirError, ModelConfig, ModelSpec, Result};
 use candle_core::safetensors::MmapedSafetensors;
 use hf_hub::{
@@ -7,18 +13,24 @@ use hf_hub::{
 use serde::Deserialize;
 use std::{collections::BTreeMap, fs, path::PathBuf};
 
+/// Handle to one pinned Hugging Face model repository and revision.
 pub struct ArtifactRepository {
     repo: ApiRepo,
 }
 
+/// Local cache paths for the small artifacts needed before memory preflight.
 #[derive(Debug)]
 pub struct MetadataArtifacts {
+    /// Path to the pinned `config.json`.
     pub config: PathBuf,
+    /// Path to the pinned `tokenizer.json`.
     pub tokenizer: PathBuf,
+    /// Path to the pinned `tokenizer_config.json`.
     pub tokenizer_config: PathBuf,
 }
 
 impl ArtifactRepository {
+    /// Creates a Hub repository handle fixed to the specification's repository and revision.
     pub fn new(spec: &ModelSpec) -> Result<Self> {
         let api = Api::new().map_err(|err| DlirError::Artifact(err.to_string()))?;
         let repo = api.repo(Repo::with_revision(
@@ -29,6 +41,7 @@ impl ArtifactRepository {
         Ok(Self { repo })
     }
 
+    /// Resolves configuration and tokenizer files through the Hugging Face cache.
     pub fn download_metadata(&self) -> Result<MetadataArtifacts> {
         Ok(MetadataArtifacts {
             config: self.get("config.json")?,
@@ -37,6 +50,7 @@ impl ArtifactRepository {
         })
     }
 
+    /// Resolves the registered checkpoint weight file through the Hugging Face cache.
     pub fn download_weights(&self, spec: &ModelSpec) -> Result<PathBuf> {
         self.get(spec.weight_file)
     }
@@ -72,6 +86,10 @@ struct HubLlamaConfig {
     vocab_size: usize,
 }
 
+/// Validates downloaded architecture and chat-template metadata against the registry.
+///
+/// The supported subset is an unbiased `LlamaForCausalLM` using SiLU and unscaled RoPE. Every
+/// [`ModelConfig`] field must match exactly.
 pub fn validate_metadata(spec: &ModelSpec, artifacts: &MetadataArtifacts) -> Result<()> {
     let raw = fs::read(&artifacts.config)?;
     let config: HubLlamaConfig = serde_json::from_slice(&raw)?;
@@ -134,6 +152,7 @@ fn required_template_markers(spec: &ModelSpec) -> &'static [&'static str] {
     }
 }
 
+/// Validates checkpoint tensor names, shapes, dtypes, and total parameter count.
 pub fn validate_checkpoint(spec: &ModelSpec, path: &PathBuf) -> Result<()> {
     // SAFETY: the immutable Hub cache path remains present for the duration of this function.
     // MmapedSafetensors owns the mapping, and no mutable file handle is exposed here.

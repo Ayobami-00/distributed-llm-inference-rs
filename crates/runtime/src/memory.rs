@@ -1,28 +1,46 @@
+//! Logical per-rank model-memory planning and IEC byte-size parsing.
+//!
+//! The v0.1 planner estimates persistent weights plus allocated KV cache. It deliberately excludes
+//! activations, workspaces, allocator fragmentation, memory maps, and runtime overhead.
+
 use crate::{DlirError, ModelSpec, PlanDType, Result};
 use serde::{Deserialize, Serialize};
 use std::{fmt, str::FromStr};
 
+/// Address-space category to which a memory budget applies.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MemoryDomain {
+    /// CPU-visible host memory.
     Host,
 }
 
+/// Origin of a memory budget value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BudgetSource {
+    /// Explicit value supplied by the user rather than detected from the machine.
     UserDeclared,
 }
 
+/// Declared memory capacity against which a rank plan is compared.
+///
+/// v0.1 budgets are advisory planning inputs. They neither reserve memory nor configure an OS,
+/// container, cgroup, or accelerator limit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MemoryBudget {
+    /// Capacity in raw bytes.
     pub bytes: u64,
+    /// Address-space category of the capacity.
     pub domain: MemoryDomain,
+    /// How the capacity value was obtained.
     pub source: BudgetSource,
+    /// Whether an operating-system mechanism enforces this capacity.
     pub os_enforced: bool,
 }
 
 impl MemoryBudget {
+    /// Constructs a non-enforced host budget supplied by the user.
     pub const fn user_declared(bytes: u64) -> Self {
         Self {
             bytes,
@@ -41,25 +59,37 @@ impl FromStr for MemoryBudget {
     }
 }
 
+/// Result of comparing persistent planned state with an optional budget.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PlacementVerdict {
+    /// Logical weight and cache bytes are less than or equal to the budget.
     FitsPersistentEstimate,
+    /// Logical weight and cache bytes exceed the budget.
     DoesNotFit,
+    /// No budget was supplied, so no capacity comparison was performed.
     NotEvaluated,
 }
 
+/// Architectural parameter totals grouped by model component.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MemoryComponentBreakdown {
+    /// Parameters in the `[vocabulary, hidden]` token embedding table.
     pub token_embedding_parameters: u64,
+    /// Parameters in all Q/K/V/O attention projections.
     pub attention_parameters: u64,
+    /// Parameters in all SwiGLU gate/up/down projections.
     pub mlp_parameters: u64,
+    /// Parameters in the two RMSNorm weights in every transformer block.
     pub layer_norm_parameters: u64,
+    /// Parameters in the model's final RMSNorm.
     pub final_norm_parameters: u64,
+    /// Independent output-head parameters, or zero when tied to embeddings.
     pub lm_head_parameters: u64,
 }
 
 impl MemoryComponentBreakdown {
+    /// Sums all mutually exclusive component counts.
     pub fn total(&self) -> u64 {
         self.token_embedding_parameters
             + self.attention_parameters
@@ -70,21 +100,40 @@ impl MemoryComponentBreakdown {
     }
 }
 
+/// Logical persistent-memory plan for one rank.
+///
+/// The v0.1 topology always produces rank 0. `persistent_bytes` is exactly `weight_bytes +
+/// kv_cache_capacity_bytes`; it is not peak process memory.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RankMemoryPlan {
+    /// Global rank that owns this plan; always zero in v0.1.
     pub rank: usize,
+    /// Total architectural parameters.
     pub parameter_count: u64,
+    /// Logical dtype used for both weight and cache byte calculations.
     pub dtype: PlanDType,
+    /// Allocated KV-cache capacity in token positions.
     pub context_length: usize,
+    /// Logical model parameter bytes at `dtype`.
     pub weight_bytes: u64,
+    /// Bytes required for preallocated key and value tensors across every layer.
     pub kv_cache_capacity_bytes: u64,
+    /// Sum of logical weight and cache-capacity bytes.
     pub persistent_bytes: u64,
+    /// Architectural component parameter counts.
     pub breakdown: MemoryComponentBreakdown,
+    /// Optional capacity used to produce `placement`.
     pub budget: Option<MemoryBudget>,
+    /// Outcome of comparing `persistent_bytes` with `budget`.
     pub placement: PlacementVerdict,
 }
 
 impl RankMemoryPlan {
+    /// Derives a rank-0 logical memory plan from one registered model.
+    ///
+    /// KV capacity is `2 × layers × context × KV heads × head dimension × dtype bytes`. All
+    /// arithmetic is checked for overflow, and the component formula must reproduce the registry's
+    /// expected parameter count.
     pub fn for_model(
         spec: &ModelSpec,
         dtype: PlanDType,
@@ -164,6 +213,18 @@ fn parameter_breakdown(spec: &ModelSpec) -> Result<MemoryComponentBreakdown> {
     })
 }
 
+/// Parses an integer byte count with an optional unambiguous IEC suffix.
+///
+/// Accepted suffixes are `B`, `KiB`, `MiB`, and `GiB`, case-insensitively. A missing suffix means
+/// raw bytes. Decimal amounts and ambiguous SI-like suffixes are rejected.
+///
+/// ```
+/// use dlir_runtime::parse_byte_size;
+///
+/// assert_eq!(parse_byte_size("500MiB")?, 500 * (1 << 20));
+/// assert!(parse_byte_size("500M").is_err());
+/// # Ok::<(), dlir_runtime::DlirError>(())
+/// ```
 pub fn parse_byte_size(value: &str) -> Result<u64> {
     let value = value.trim();
     if value.is_empty() {
@@ -204,6 +265,7 @@ fn invalid_size(value: &str, reason: &str) -> DlirError {
     }
 }
 
+/// Formats bytes using the largest applicable IEC unit and stable CLI precision.
 pub fn format_bytes(bytes: u64) -> String {
     const GIB: f64 = (1u64 << 30) as f64;
     const MIB: f64 = (1u64 << 20) as f64;
