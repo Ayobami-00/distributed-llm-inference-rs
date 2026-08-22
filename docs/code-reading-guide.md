@@ -1,7 +1,7 @@
 # Code-reading guide
 
-This guide contains two executable paths. The first follows `dlir generate`; the second follows
-the smaller `dlir p2p` communication path.
+This guide contains four executable paths. The numbered path follows `dlir generate`; shorter
+sections then follow `dlir p2p`, `dlir launch`, and the distributed `dlir pipeline` request.
 
 ## 1. CLI parsing and request construction
 
@@ -167,3 +167,39 @@ For `dlir launch --nproc 2 --total-cpus 1 --total-memory 512MiB`:
 
 Continue with [TCP rendezvous and barrier](tcp-rendezvous-and-barrier.md) and
 [Docker resource topologies](docker-topologies.md).
+
+## Pipeline Docker path
+
+For `dlir pipeline --model smollm2-135m-instruct ... --nproc 2`:
+
+1. `Command::Pipeline` in [`cli/main.rs`](../crates/cli/src/main.rs) constructs a
+   `PipelineLaunchRequest` while the CLI fixes device/dtype to CPU/F32.
+2. `run_pipeline` in [`cli/pipeline.rs`](../crates/cli/src/pipeline.rs) resolves only metadata,
+   renders/tokenizes the prompt, and calculates the effective request cache capacity.
+3. `PipelinePartition::balanced` and `StageMemoryPlan::for_stage` in
+   [`pipeline/partition.rs`](../crates/pipeline/src/partition.rs) assign contiguous layer ranges,
+   special embedding/head ownership, local weights, and local KV bytes. The Docker resource plan
+   is compared with every stage before checkpoint download.
+4. The host resolves and validates the checkpoint once, writes `PipelineManifest`, and constructs
+   read-only artifact bind mounts. `pipeline_container_arguments` selects the internal
+   `dlir rank --workload pipeline` path.
+5. Each container enters `run_pipeline_rank_process`, verifies the checkpoint and cgroup limits,
+   forms the same protocol-v2 full mesh, and passes its `TcpTransport` into
+   [`run_pipeline_rank`](../crates/pipeline/src/runner.rs).
+6. `LlamaStage::load` in [`model/llama.rs`](../crates/runtime/src/model/llama.rs) requests only the
+   assigned transformer tensors plus rank-specific embeddings/final head. `StageKvCache` allocates
+   only the local layer count.
+7. Follow the startup barrier, rank-0 `forward_tokens`, middle/final `forward_hidden`, and
+   `send_activation`. The final rank calls `finish`, selects `argmax`, and uses
+   `PipelineControl::Token` to return the ID directly to rank 0.
+8. Rank 0 emits non-EOS text and sends `PipelineControl::Decision` to every other stage. A
+   continuation embeds the previous token and repeats the chain with `[1,1,H]` activations.
+9. `EventRecorder` publishes JSONL while retaining the same rank-local records. The host's
+   `collect_rank_streams` validates sequence numbers, adds receive ordering, and feeds text, report,
+   and optional `DashboardState` consumers.
+10. After the completion barrier, rank reports become `PipelineReport`; the CLI restores any TUI,
+    writes the optional JSON file, prints metrics to stderr, and performs scoped Docker cleanup.
+
+The theory, shapes, memory formula, and stop conditions are in
+[Pipeline partitioning and execution](pipeline-parallelism.md). Event timing and terminal behavior
+are in [Distributed events and the observational TUI](events-and-tui.md).

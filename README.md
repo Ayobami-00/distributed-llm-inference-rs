@@ -5,13 +5,20 @@
 `v0.2-collectives` checkpoint adds logical ranks and copied point-to-point tensor communication
 without changing the single-rank model execution path. `v0.3-tcp` moves those ranks into separate
 Docker containers, connects them through TCP, and verifies enforced per-rank CPU and memory limits.
+`v0.4-pipeline` partitions the owned Llama model into contiguous CPU stages, transfers residual
+activations over TCP, feeds selected tokens back to rank 0, and exposes the run through a
+read-only terminal dashboard.
 
-The workspace contains three crates:
+The workspace contains five crates:
 
 - `dlir-runtime` owns the model registry, artifact validation, Llama forward path, KV cache,
   memory planning, generation, events, and reports.
 - `dlir-collectives` owns rank identity, in-memory and TCP transports, rendezvous, barrier,
-  tensor packets, and send/receive.
+  tensor/control packets, and send/receive.
+- `dlir-pipeline` owns deterministic stage assignment, stage memory plans, the rank-local
+  pipeline state machine, typed control messages, events, and distributed reports.
+- `dlir-tui` reduces the event stream into an observational Ratatui dashboard. It owns no
+  cluster or process lifecycle operations.
 - `dlir-cli` provides `dlir`, launches Docker rank processes, verifies cgroup limits, and owns
   terminal/file output and exit behavior.
 
@@ -29,7 +36,9 @@ the [owned Llama forward pass](docs/llama-forward-pass.md),
 [KV-cached generation](docs/kv-cache-and-generation.md),
 [ranks and point-to-point communication](docs/ranks-and-point-to-point.md),
 [TCP rendezvous and barrier](docs/tcp-rendezvous-and-barrier.md), and
-[Docker resource topologies](docs/docker-topologies.md).
+[Docker resource topologies](docs/docker-topologies.md),
+[pipeline partitioning and execution](docs/pipeline-parallelism.md), and the
+[event/TUI architecture](docs/events-and-tui.md).
 
 ## Build
 
@@ -91,6 +100,41 @@ Dockerfile when missing and reused afterward.
 Docker status goes to stderr. The final rank-ordered report goes to stdout; add `--format json`
 for schema-v1 output. The topology uses one trusted Docker Engine and publishes no host ports.
 It does not load or partition a model.
+
+## Pipeline-parallel generation
+
+Split one deterministic generation request across two CPU stage containers:
+
+```console
+dlir pipeline \
+  --model smollm2-135m-instruct \
+  --device cpu \
+  --dtype f32 \
+  --prompt "Explain pipeline parallelism." \
+  --max-new-tokens 8 \
+  --nproc 2 \
+  --total-cpus 2 \
+  --total-memory 2GiB \
+  --report pipeline-run.json
+```
+
+The host applies the fixed chat template and tokenizes once, constructs a balanced contiguous
+layer partition, and checks every stage against its enforced container memory limit before it
+downloads the checkpoint. It then bind-mounts the validated checkpoint and request manifest
+read-only into every rank container. Rank 0 owns embeddings, the final rank owns final RMSNorm
+and the LM head, and each rank materializes only its local transformer layers and local KV cache.
+
+Prefill sends `[1, prompt_tokens, hidden_size]` residual activations down the stage chain. Decode
+sends `[1, 1, hidden_size]`. The final stage keeps logits local, selects `argmax`, and returns a
+typed token control message directly to rank 0. Rank 0 emits the token and broadcasts a typed
+continue/stop decision. This correctness-first schedule is sequential: it has no microbatches or
+stage overlap and does not claim a throughput speedup.
+
+Add `--tui` to display the read-only Ratatui dashboard on stderr. `q`/Esc closes only the
+visualization and generation continues; Ctrl-C requests launcher cleanup. The assistant
+completion remains on stdout, progress and metrics use stderr, and `--report` writes the complete
+schema-v1 distributed result. See [pipeline partitioning](docs/pipeline-parallelism.md) and
+[events and TUI](docs/events-and-tui.md).
 
 ## Supported models
 
@@ -204,15 +248,17 @@ ignored by default:
 
 ```console
 cargo test -p dlir-runtime --test e2e -- --ignored --nocapture
+cargo test -p dlir-cli --test pipeline_docker -- --ignored --nocapture
+cargo test -p dlir-cli --test pipeline_process -- --ignored --nocapture
 ```
 
-That command can download approximately 269 MB for SmolLM2 and 2.2 GB for TinyLlama and may
+Those commands can download approximately 269 MB for SmolLM2 and 2.2 GB for TinyLlama and may
 require several gigabytes of host memory because runtime weights are F32.
 
 ## Release checkpoints
 
 Each tag is intended to leave the project in a runnable, measurable state that supports one
-checkpoint in the accompanying article. Only tags marked **implemented** currently exist;
+checkpoint in the accompanying article. Only tags marked **Released** currently exist;
 the remaining names describe the planned progression and may be refined as the work develops.
 
 | Tag | Status | What it contains |
@@ -220,7 +266,7 @@ the remaining names describe the planned progression and may be refined as the w
 | [`v0.1-single`](https://github.com/Ayobami-00/distributed-llm-inference-rs/tree/v0.1-single) | Released | A single CPU process and device; the closed model registry; model inspection and memory planning; an owned Llama forward path; prefill and cached decode; greedy generation; structured events, metrics, and JSON reports. |
 | [`v0.2-collectives`](https://github.com/Ayobami-00/distributed-llm-inference-rs/tree/v0.2-collectives) | Released | Thread-hosted logical ranks; an in-memory transport; copied CPU/F32 tensor packets; tagged point-to-point send/receive; deterministic text and JSON ring demonstrations; and offline communication correctness tests. |
 | [`v0.3-tcp`](https://github.com/Ayobami-00/distributed-llm-inference-rs/tree/v0.3-tcp) | Released | One rank per process and Docker container; versioned TCP transport; rank-0 rendezvous; a full peer mesh; reusable barrier synchronization; enforced per-rank CPU/memory limits; and reproducible text/JSON topology reports. |
-| `v0.4-pipeline` | Planned | Pipeline-stage model partitioning, rank-local weight loading, activation transfer between stages, and autoregressive token feedback. |
+| [`v0.4-pipeline`](https://github.com/Ayobami-00/distributed-llm-inference-rs/tree/v0.4-pipeline) | Released | Balanced contiguous pipeline stages; rank-local weight and KV-cache materialization; TCP activation transfer; typed autoregressive token feedback; per-stage placement and distributed schema-v1 reports; and an optional read-only Ratatui event dashboard. |
 | `v0.5-tensor` | Planned | Column- and row-parallel linear layers, sharded attention and MLP execution, tensor-parallel collectives, and distributed generation. |
 | `v0.6-hybrid` | Planned | Process groups and combined tensor and pipeline parallelism, including topology-aware memory and communication measurements. |
 | `v0.7-cuda-nccl` | Planned | CUDA execution and an NCCL communicator implementing the same distributed semantics used by the CPU backends. |

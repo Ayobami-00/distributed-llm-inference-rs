@@ -5,6 +5,9 @@
 //! KV-cached greedy generation, structured events, and versioned reports. The crate contains no
 //! terminal presentation logic; [`generate`] reports progress through [`EventObserver`] and
 //! returns structured data for any caller to present.
+//! `v0.4-pipeline` also reuses this crate's [`LlamaStage`] and [`StageKvCache`] APIs so a physical
+//! rank can materialize and execute only a contiguous transformer slice without moving Docker or
+//! transport concerns into the model implementation.
 //!
 //! # Inspect without model downloads
 //!
@@ -67,6 +70,9 @@ mod prompt;
 mod registry;
 mod report;
 
+pub use artifacts::{
+    ArtifactRepository, MetadataArtifacts, validate_checkpoint, validate_metadata,
+};
 pub use error::{DlirError, Result};
 pub use generation::{EventObserver, GenerationRequest, NoopObserver, generate};
 pub use inspect::{InspectionReport, InspectionRequest, inspect};
@@ -74,10 +80,13 @@ pub use memory::{
     BudgetSource, MemoryBudget, MemoryComponentBreakdown, MemoryDomain, PlacementVerdict,
     RankMemoryPlan, format_bytes, parse_byte_size,
 };
+pub use model::{LayerObserver, LlamaStage, NoopLayerObserver, StageKvCache};
+pub use prompt::render_prompt;
 pub use registry::{
     CheckpointDType, ExecutionSupport, ModelConfig, ModelSpec, PlanDType, PromptTemplate,
     SupportedModelId, TensorLayout, supported_models,
 };
 pub use report::{
-    GenerationReport, RunEvent, RunEventKind, StopReason, TimingReport, TopologyReport,
+    CollectiveKind, ControlPurpose, ExecutionPhase, GenerationReport, RunEvent, RunEventKind,
+    StopReason, TensorPurpose, TimingReport, TopologyReport,
 };

@@ -2,8 +2,9 @@
 //!
 //! `v0.2-collectives` introduces logical ranks hosted by worker threads, an in-memory transport,
 //! and copied CPU/F32 tensor send and receive operations. `v0.3-tcp` adds one rank per process,
-//! rank-0 rendezvous, full-mesh TCP streams, and reusable barrier synchronization. Model inference
-//! remains single-rank.
+//! rank-0 rendezvous, full-mesh TCP streams, and reusable barrier synchronization. `v0.4` adds
+//! protocol-v2 bounded control packets so pipeline ranks can exchange token IDs and decisions
+//! independently of copied activation tensors.
 //!
 //! # Two-rank tensor exchange
 //!
@@ -32,6 +33,7 @@
 
 mod barrier;
 mod communicator;
+mod control;
 mod error;
 mod in_memory;
 mod rank;
@@ -43,6 +45,7 @@ mod transport;
 
 pub use barrier::BarrierTransport;
 pub use communicator::Communicator;
+pub use control::{ControlPacket, MAX_CONTROL_BYTES};
 pub use error::{CollectivesError, Result};
 pub use in_memory::{InMemoryTransport, create_in_memory_world};
 pub use rank::{MessageTag, Rank};
@@ -52,4 +55,4 @@ pub use tcp::{
     DEFAULT_MAX_TENSOR_BYTES, PROTOCOL_VERSION, PeerInfo, TcpTransport, TcpTransportConfig,
 };
 pub use tensor::TensorPacket;
-pub use transport::Transport;
+pub use transport::{ControlTransport, Transport};

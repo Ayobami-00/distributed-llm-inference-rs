@@ -1,0 +1,13 @@
+[package]
+name = "dlir-tui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+crossterm.workspace = true
+dlir-pipeline = { path = "../pipeline" }
+dlir-runtime = { path = "../runtime" }
+ratatui.workspace = true

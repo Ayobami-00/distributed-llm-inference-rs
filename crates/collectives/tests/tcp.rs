@@ -137,6 +137,67 @@ fn tcp_receive_preserves_out_of_order_tags() {
 }
 
 #[test]
+fn tcp_control_and_tensor_frames_match_independently_and_out_of_order() {
+    let rendezvous_port = free_port();
+    let peer_ports = [free_port(), free_port()];
+    let handles = (0..2)
+        .map(|global_rank| {
+            thread::spawn(move || {
+                let communicator = Communicator::new(
+                    TcpTransport::connect(TcpTransportConfig {
+                        rank: Rank::new(global_rank, 2).unwrap(),
+                        run_id: "tcp-control-tags".to_owned(),
+                        rendezvous_addr: format!("127.0.0.1:{rendezvous_port}"),
+                        rendezvous_bind_addr: (global_rank == 0)
+                            .then(|| format!("127.0.0.1:{rendezvous_port}")),
+                        listen_addr: format!("127.0.0.1:{}", peer_ports[global_rank]),
+                        advertise_addr: format!("127.0.0.1:{}", peer_ports[global_rank]),
+                        startup_timeout: STARTUP_TIMEOUT,
+                        operation_timeout: OPERATION_TIMEOUT,
+                        max_tensor_bytes: DEFAULT_MAX_TENSOR_BYTES,
+                    })
+                    .unwrap(),
+                );
+                if global_rank == 0 {
+                    communicator
+                        .send_control(1, MessageTag(20), b"first".to_vec())
+                        .unwrap();
+                    communicator
+                        .send_tensor(
+                            1,
+                            MessageTag(20),
+                            &Tensor::new(&[3f32, 4.], &Device::Cpu).unwrap(),
+                        )
+                        .unwrap();
+                    communicator
+                        .send_control(1, MessageTag(21), b"second".to_vec())
+                        .unwrap();
+                    Vec::new()
+                } else {
+                    let second = communicator.recv_control(0, MessageTag(21)).unwrap();
+                    let tensor = communicator
+                        .recv_tensor(0, MessageTag(20))
+                        .unwrap()
+                        .to_vec1::<f32>()
+                        .unwrap();
+                    let first = communicator.recv_control(0, MessageTag(20)).unwrap();
+                    [first, second]
+                        .into_iter()
+                        .flatten()
+                        .chain(tensor.into_iter().map(|value| value as u8))
+                        .collect()
+                }
+            })
+        })
+        .collect::<Vec<_>>();
+    let results = handles
+        .into_iter()
+        .map(|handle| handle.join().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(results[1], b"firstsecond\x03\x04");
+}
+
+#[test]
 fn tcp_receive_and_barrier_use_total_deadlines() {
     let rendezvous_port = free_port();
     let peer_ports = [free_port(), free_port()];

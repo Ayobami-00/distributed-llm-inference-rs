@@ -77,7 +77,33 @@ impl KvCache {
                 config.max_position_embeddings
             )));
         }
-        let layers = (0..config.num_hidden_layers)
+        Self::new_for_layers(config, config.num_hidden_layers, capacity, dtype, device)
+    }
+
+    /// Allocates cache storage for only `layer_count` transformer layers.
+    ///
+    /// Pipeline stages use this constructor so a rank does not allocate KV state for layers it
+    /// does not execute.
+    pub fn new_for_layers(
+        config: &ModelConfig,
+        layer_count: usize,
+        capacity: usize,
+        dtype: DType,
+        device: &Device,
+    ) -> Result<Self> {
+        if layer_count == 0 || layer_count > config.num_hidden_layers {
+            return Err(DlirError::InvalidConfig(format!(
+                "cache layer count must be between 1 and {}, got {layer_count}",
+                config.num_hidden_layers
+            )));
+        }
+        if capacity == 0 || capacity > config.max_position_embeddings {
+            return Err(DlirError::InvalidConfig(format!(
+                "cache capacity {capacity} is outside model context 1..={}",
+                config.max_position_embeddings
+            )));
+        }
+        let layers = (0..layer_count)
             .map(|_| LayerKvCache::new(config, capacity, dtype, device))
             .collect::<Result<Vec<_>>>()?;
         Ok(Self { layers, capacity })
@@ -90,6 +116,16 @@ impl KvCache {
     /// Returns the populated token positions visible to the next forward call.
     pub fn len(&self) -> usize {
         self.layers.first().map_or(0, |layer| layer.length)
+    }
+
+    /// Returns true when no token positions have been cached.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Returns the number of local layers stored by this cache.
+    pub fn layer_count(&self) -> usize {
+        self.layers.len()
     }
 
     pub(crate) fn append(
@@ -107,10 +143,13 @@ impl KvCache {
     /// Calculates logical bytes populated across all layer keys and values.
     pub fn used_bytes(&self, config: &ModelConfig, dtype: DType) -> Result<u64> {
         let bytes = dtype.size_in_bytes() as u64;
-        Ok(2 * config.num_hidden_layers as u64
+        Ok(2 * self.layers.len() as u64
             * self.len() as u64
             * config.num_key_value_heads as u64
             * config.head_dim()? as u64
             * bytes)
     }
 }
+
+/// Stage-local cache alias emphasizing that only assigned layers are allocated.
+pub type StageKvCache = KvCache;

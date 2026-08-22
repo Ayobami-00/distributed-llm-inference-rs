@@ -1,11 +1,13 @@
 //! Command-line presentation layer for the dlir inference laboratory.
 //!
 //! The binary converts CLI arguments into runtime requests, renders model, inspection, and
-//! point-to-point results, launches Docker rank processes, streams assistant text through an event
-//! observer, writes optional JSON reports, and owns exit behavior. Inference remains in
-//! `dlir-runtime`; communication remains in `dlir-collectives`.
+//! point-to-point results, launches Docker rank processes, orchestrates pipeline requests, streams
+//! assistant text and rank events, writes optional JSON reports, and owns exit behavior. Model
+//! execution remains in `dlir-runtime`/`dlir-pipeline`; communication remains in
+//! `dlir-collectives`; terminal reduction remains in `dlir-tui`.
 
 mod launch;
+mod pipeline;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
@@ -24,6 +26,7 @@ use std::{
 };
 
 use launch::{CpuAmount, LaunchRequest, RankRequest};
+use pipeline::PipelineLaunchRequest;
 
 const P2P_RECEIVE_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -41,6 +44,60 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Generate one completion across CPU pipeline stages in Docker containers.
+    Pipeline {
+        /// Exact identifier from `dlir models`; arbitrary Hub IDs are rejected.
+        #[arg(long)]
+        model: SupportedModelId,
+        /// Execution device; v0.4 pipeline generation accepts only cpu.
+        #[arg(long, value_enum, default_value_t)]
+        device: DeviceArg,
+        /// Runtime dtype; v0.4 pipeline generation accepts only f32.
+        #[arg(long, default_value = "f32")]
+        dtype: PlanDType,
+        /// Non-empty user message to wrap in the model's registered chat template.
+        #[arg(long)]
+        prompt: String,
+        /// Maximum number of non-EOS tokens to emit; must be at least one.
+        #[arg(long, default_value_t = 32)]
+        max_new_tokens: usize,
+        /// Number of CPU pipeline-stage containers; must be between 2 and 64.
+        #[arg(long)]
+        nproc: usize,
+        /// Total CPU quota to divide equally, with up to three decimal places.
+        #[arg(long)]
+        total_cpus: CpuAmount,
+        /// Total memory to divide equally using bytes, KiB, MiB, or GiB.
+        #[arg(long)]
+        total_memory: String,
+        /// Docker image to reuse or build when missing.
+        #[arg(long, default_value = "dlir:v0.4-pipeline")]
+        image: String,
+        /// Directory containing the checked-in Dockerfile and workspace.
+        #[arg(long, default_value = ".")]
+        build_context: PathBuf,
+        /// Force a no-cache image rebuild.
+        #[arg(long)]
+        rebuild: bool,
+        /// Stable run identifier; generated when omitted.
+        #[arg(long)]
+        run_id: Option<String>,
+        /// Artifact, rendezvous, and connection-establishment deadline.
+        #[arg(long, default_value_t = 30)]
+        startup_timeout_seconds: u64,
+        /// Activation, control, and barrier receive deadline.
+        #[arg(long, default_value_t = 30)]
+        operation_timeout_seconds: u64,
+        /// Display the read-only live pipeline dashboard on stderr.
+        #[arg(long)]
+        tui: bool,
+        /// Write the complete schema-v1 distributed pipeline report as JSON.
+        #[arg(long)]
+        report: Option<PathBuf>,
+        /// Retain stopped containers, network, and request manifest for inspection.
+        #[arg(long)]
+        keep_containers: bool,
+    },
     /// Start one TCP rank per Docker container and verify the topology.
     Launch {
         /// Number of rank containers; must be between 2 and 64.
@@ -79,6 +136,12 @@ enum Command {
     },
     /// Run exactly one TCP rank; normally invoked as container PID 1 by `dlir launch`.
     Rank {
+        /// Internal rank workload. Docker topology checks use `topology`.
+        #[arg(long, value_enum, default_value_t)]
+        workload: RankWorkloadArg,
+        /// Read-only pipeline request manifest, required by the pipeline workload.
+        #[arg(long, required_if_eq("workload", "pipeline"))]
+        pipeline_manifest: Option<PathBuf>,
         /// Zero-based global rank.
         #[arg(long)]
         rank: usize,
@@ -188,8 +251,51 @@ enum DeviceArg {
     Cpu,
 }
 
+#[derive(Debug, Clone, Copy, Default, ValueEnum)]
+enum RankWorkloadArg {
+    #[default]
+    Topology,
+    Pipeline,
+}
+
 fn main() -> Result<()> {
     match Cli::parse().command {
+        Command::Pipeline {
+            model,
+            device: DeviceArg::Cpu,
+            dtype,
+            prompt,
+            max_new_tokens,
+            nproc,
+            total_cpus,
+            total_memory,
+            image,
+            build_context,
+            rebuild,
+            run_id,
+            startup_timeout_seconds,
+            operation_timeout_seconds,
+            tui,
+            report,
+            keep_containers,
+        } => pipeline::run_pipeline(PipelineLaunchRequest {
+            model,
+            dtype,
+            prompt,
+            max_new_tokens,
+            nproc,
+            total_cpus,
+            total_memory,
+            image,
+            build_context,
+            rebuild,
+            run_id,
+            startup_timeout: Duration::from_secs(startup_timeout_seconds),
+            operation_timeout: Duration::from_secs(operation_timeout_seconds),
+            tui,
+            report,
+            keep_containers,
+        }),
         Command::Launch {
             nproc,
             total_cpus,
@@ -216,6 +322,8 @@ fn main() -> Result<()> {
             keep_containers,
         }),
         Command::Rank {
+            workload,
+            pipeline_manifest,
             rank,
             world_size,
             run_id,
@@ -227,19 +335,30 @@ fn main() -> Result<()> {
             operation_timeout_seconds,
             expected_cpu_millis,
             expected_memory_bytes,
-        } => launch::run_rank(RankRequest {
-            rank,
-            world_size,
-            run_id,
-            rendezvous_addr,
-            rendezvous_bind_addr,
-            listen_addr,
-            advertise_addr,
-            startup_timeout: Duration::from_secs(startup_timeout_seconds),
-            operation_timeout: Duration::from_secs(operation_timeout_seconds),
-            expected_cpu_millis,
-            expected_memory_bytes,
-        }),
+        } => {
+            let rank_request = RankRequest {
+                rank,
+                world_size,
+                run_id,
+                rendezvous_addr,
+                rendezvous_bind_addr,
+                listen_addr,
+                advertise_addr,
+                startup_timeout: Duration::from_secs(startup_timeout_seconds),
+                operation_timeout: Duration::from_secs(operation_timeout_seconds),
+                expected_cpu_millis,
+                expected_memory_bytes,
+            };
+            match workload {
+                RankWorkloadArg::Topology => launch::run_rank(rank_request),
+                RankWorkloadArg::Pipeline => pipeline::run_pipeline_rank_process(
+                    rank_request,
+                    pipeline_manifest
+                        .as_deref()
+                        .context("--pipeline-manifest is required for pipeline ranks")?,
+                ),
+            }
+        }
         Command::P2p { world_size, format } => run_p2p(world_size, format),
         Command::Models { format } => print_models(format),
         Command::Inspect {
@@ -631,6 +750,71 @@ mod tests {
                 "cuda",
                 "--prompt",
                 "hello",
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn pipeline_parser_exposes_only_the_supported_cpu_execution_shape() {
+        let parsed = Cli::try_parse_from([
+            "dlir",
+            "pipeline",
+            "--model",
+            "smollm2-135m-instruct",
+            "--prompt",
+            "hello",
+            "--nproc",
+            "2",
+            "--total-cpus",
+            "1",
+            "--total-memory",
+            "512MiB",
+            "--report",
+            "run.json",
+        ]);
+        assert!(parsed.is_ok());
+        assert!(
+            Cli::try_parse_from([
+                "dlir",
+                "pipeline",
+                "--model",
+                "smollm2-135m-instruct",
+                "--device",
+                "cuda",
+                "--prompt",
+                "hello",
+                "--nproc",
+                "2",
+                "--total-cpus",
+                "1",
+                "--total-memory",
+                "512MiB",
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn pipeline_rank_requires_a_manifest() {
+        assert!(
+            Cli::try_parse_from([
+                "dlir",
+                "rank",
+                "--workload",
+                "pipeline",
+                "--rank",
+                "0",
+                "--world-size",
+                "2",
+                "--run-id",
+                "run",
+                "--rendezvous-addr",
+                "rank-0:29500",
+                "--listen-addr",
+                "0.0.0.0:29501",
+                "--advertise-addr",
+                "rank-0:29501",
             ])
             .is_err()
         );

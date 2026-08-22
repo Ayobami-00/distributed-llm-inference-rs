@@ -1,7 +1,9 @@
 # TCP rendezvous and barrier
 
 `v0.3-tcp` replaces thread-local channels with sockets while preserving the tensor-facing
-`Communicator` contract. Every rank is now a separate process with a private address space.
+`Communicator` contract. Every rank is a separate process with a private address space. `v0.4`
+bumps the protocol to version 2 and adds bounded application control packets without changing the
+v0.3 topology or tensor semantics.
 
 ## Startup phases
 
@@ -47,7 +49,7 @@ Lower ranks dial higher ranks while accept loops run concurrently. Every connect
 handshake containing protocol, run, world, source, and destination identity. The stream is then
 split into mutex-protected reader and writer handles, allowing either peer to send.
 
-## Tensor wire frames
+## Tensor and control wire frames
 
 Tensor data uses an explicit little-endian binary frame:
 
@@ -60,6 +62,18 @@ The receiver validates the 256 MiB frame bound, numeric conversions, shape produ
 source, destination, and tag before constructing a new CPU tensor. TCP is a byte stream, so the
 length prefix is what restores message boundaries. Unrequested tensor tags remain in the same
 pending-message model used by `InMemoryTransport`.
+
+Protocol v2 assigns application control a different frame kind:
+
+```text
+length | magic | version | control kind | source | destination | tag
+       | payload length | bounded payload bytes
+```
+
+Control payloads are capped at 64 KiB. Tensor and control receives both match source and tag, but
+they cannot consume one another even when the caller reuses a numeric tag. Pipeline control data
+is typed above this transport boundary as token feedback or a continue/stop decision. Wrong wire
+versions fail during rendezvous/handshake and again during frame decoding.
 
 ## Reusable barrier
 

@@ -1,7 +1,9 @@
-//! Versioned TCP rendezvous, full-mesh connection establishment, and tensor transport.
+//! Versioned TCP rendezvous, full-mesh connection establishment, tensor/control transport, and
+//! reusable centralized barriers.
 
 use crate::{
-    BarrierTransport, CollectivesError, MessageTag, Rank, Result, TensorPacket, Transport,
+    BarrierTransport, CollectivesError, ControlPacket, ControlTransport, MessageTag, Rank, Result,
+    TensorPacket, Transport,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::{
@@ -14,7 +16,7 @@ use std::{
 };
 
 /// Wire-protocol version understood by this release.
-pub const PROTOCOL_VERSION: u16 = 1;
+pub const PROTOCOL_VERSION: u16 = 2;
 /// Default upper bound for one encoded tensor frame.
 pub const DEFAULT_MAX_TENSOR_BYTES: usize = 256 * 1024 * 1024;
 
@@ -23,6 +25,7 @@ const WIRE_MAGIC: [u8; 4] = *b"DLIR";
 const TENSOR_KIND: u8 = 1;
 const BARRIER_ARRIVE_KIND: u8 = 2;
 const BARRIER_RELEASE_KIND: u8 = 3;
+const APPLICATION_CONTROL_KIND: u8 = 4;
 
 /// One rank and its network-visible data address.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -235,6 +238,28 @@ impl TcpTransport {
         }
     }
 
+    fn take_pending_control(
+        &self,
+        source: usize,
+        tag: MessageTag,
+    ) -> Result<Option<ControlPacket>> {
+        let mut pending =
+            self.pending[source]
+                .lock()
+                .map_err(|_| CollectivesError::Synchronization {
+                    rank: self.rank.global_rank(),
+                })?;
+        let Some(index) = pending.iter().position(
+            |frame| matches!(frame, WireFrame::Control { tag: candidate, .. } if *candidate == tag),
+        ) else {
+            return Ok(None);
+        };
+        match pending.remove(index) {
+            Some(WireFrame::Control { packet, .. }) => Ok(Some(packet)),
+            _ => unreachable!("matched control frame"),
+        }
+    }
+
     fn recv_barrier(
         &self,
         source: usize,
@@ -252,7 +277,12 @@ impl TcpTransport {
                         })?;
                 pending
                     .iter()
-                    .position(|frame| !matches!(frame, WireFrame::Tensor { .. }))
+                    .position(|frame| {
+                        matches!(
+                            frame,
+                            WireFrame::BarrierArrive { .. } | WireFrame::BarrierRelease { .. }
+                        )
+                    })
                     .and_then(|index| pending.remove(index))
             };
             let frame = match pending_frame {
@@ -336,6 +366,67 @@ impl Transport for TcpTransport {
             })?;
             match frame {
                 WireFrame::Tensor {
+                    tag: actual,
+                    packet,
+                    ..
+                } if actual == tag => return Ok(packet),
+                other => self.pending[source]
+                    .lock()
+                    .map_err(|_| CollectivesError::Synchronization {
+                        rank: self.rank.global_rank(),
+                    })?
+                    .push_back(other),
+            }
+        }
+    }
+}
+
+impl ControlTransport for TcpTransport {
+    fn send_control(
+        &self,
+        destination: usize,
+        tag: MessageTag,
+        packet: ControlPacket,
+    ) -> Result<()> {
+        self.send_frame(
+            destination,
+            &WireFrame::Control {
+                source: self.rank.global_rank(),
+                destination,
+                tag,
+                packet,
+            },
+            Instant::now() + self.operation_timeout,
+        )
+    }
+
+    fn recv_control(&self, source: usize, tag: MessageTag) -> Result<ControlPacket> {
+        self.rank.validate_peer(source)?;
+        if let Some(packet) = self.take_pending_control(source, tag)? {
+            return Ok(packet);
+        }
+        let deadline = Instant::now() + self.operation_timeout;
+        loop {
+            let frame = self.read_from(source, deadline).map_err(|error| {
+                if is_timeout_error(&error) {
+                    CollectivesError::ReceiveTimeout {
+                        rank: self.rank.global_rank(),
+                        source_rank: source,
+                        tag,
+                        timeout: self.operation_timeout,
+                    }
+                } else if is_disconnect_error(&error) {
+                    CollectivesError::ReceiveDisconnected {
+                        rank: self.rank.global_rank(),
+                        source_rank: source,
+                        tag,
+                    }
+                } else {
+                    error
+                }
+            })?;
+            match frame {
+                WireFrame::Control {
                     tag: actual,
                     packet,
                     ..
@@ -675,6 +766,12 @@ enum WireFrame {
         tag: MessageTag,
         packet: TensorPacket,
     },
+    Control {
+        source: usize,
+        destination: usize,
+        tag: MessageTag,
+        packet: ControlPacket,
+    },
     BarrierArrive {
         source: usize,
         destination: usize,
@@ -691,6 +788,7 @@ impl WireFrame {
     fn source(&self) -> usize {
         match self {
             Self::Tensor { source, .. }
+            | Self::Control { source, .. }
             | Self::BarrierArrive { source, .. }
             | Self::BarrierRelease { source, .. } => *source,
         }
@@ -699,6 +797,7 @@ impl WireFrame {
     fn destination(&self) -> usize {
         match self {
             Self::Tensor { destination, .. }
+            | Self::Control { destination, .. }
             | Self::BarrierArrive { destination, .. }
             | Self::BarrierRelease { destination, .. } => *destination,
         }
@@ -711,6 +810,7 @@ fn encode_wire(frame: &WireFrame, maximum: usize) -> Result<Vec<u8>> {
     body.extend_from_slice(&PROTOCOL_VERSION.to_le_bytes());
     let kind = match frame {
         WireFrame::Tensor { .. } => TENSOR_KIND,
+        WireFrame::Control { .. } => APPLICATION_CONTROL_KIND,
         WireFrame::BarrierArrive { .. } => BARRIER_ARRIVE_KIND,
         WireFrame::BarrierRelease { .. } => BARRIER_RELEASE_KIND,
     };
@@ -739,6 +839,17 @@ fn encode_wire(frame: &WireFrame, maximum: usize) -> Result<Vec<u8>> {
             for value in packet.values() {
                 body.extend_from_slice(&value.to_bits().to_le_bytes());
             }
+        }
+        WireFrame::Control { tag, packet, .. } => {
+            body.extend_from_slice(&tag.0.to_le_bytes());
+            body.extend_from_slice(
+                &u32::try_from(packet.bytes().len())
+                    .map_err(|_| {
+                        CollectivesError::Protocol("control payload length overflow".to_owned())
+                    })?
+                    .to_le_bytes(),
+            );
+            body.extend_from_slice(packet.bytes());
         }
         WireFrame::BarrierArrive { generation, .. }
         | WireFrame::BarrierRelease { generation, .. } => {
@@ -808,6 +919,26 @@ fn decode_wire(body: Vec<u8>) -> Result<WireFrame> {
                 destination,
                 tag,
                 packet: TensorPacket::new(shape, values)?,
+            }
+        }
+        APPLICATION_CONTROL_KIND => {
+            let tag = MessageTag(read_u64(&mut cursor)?);
+            let length = read_u32(&mut cursor)? as usize;
+            let remaining = body.len().saturating_sub(cursor.position() as usize);
+            if remaining != length {
+                return Err(CollectivesError::Protocol(format!(
+                    "control frame declares {length} bytes but carries {remaining}"
+                )));
+            }
+            let mut bytes = vec![0u8; length];
+            cursor
+                .read_exact(&mut bytes)
+                .map_err(|source| io_error("decode control payload", source))?;
+            WireFrame::Control {
+                source,
+                destination,
+                tag,
+                packet: ControlPacket::new(bytes)?,
             }
         }
         BARRIER_ARRIVE_KIND => WireFrame::BarrierArrive {
@@ -1084,6 +1215,29 @@ mod tests {
                 assert_eq!(packet.values(), &[1., 2., 3., 4.]);
             }
             _ => panic!("expected tensor"),
+        }
+    }
+
+    #[test]
+    fn wire_control_round_trip_preserves_peers_tag_and_bytes() {
+        let frame = WireFrame::Control {
+            source: 1,
+            destination: 0,
+            tag: MessageTag(77),
+            packet: ControlPacket::new(b"continue".to_vec()).unwrap(),
+        };
+        let decoded = decode_wire(encode_wire(&frame, 1024).unwrap()).unwrap();
+        match decoded {
+            WireFrame::Control {
+                source,
+                destination,
+                tag,
+                packet,
+            } => {
+                assert_eq!((source, destination, tag), (1, 0, MessageTag(77)));
+                assert_eq!(packet.bytes(), b"continue");
+            }
+            _ => panic!("expected control frame"),
         }
     }
 

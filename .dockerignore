@@ -2,5 +2,6 @@
 .github
 target
 run.json
+pipeline-run.json
 *.log
 .DS_Store

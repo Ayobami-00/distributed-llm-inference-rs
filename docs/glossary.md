@@ -1,5 +1,10 @@
 # Glossary
 
+## Activation
+
+The intermediate residual hidden-state tensor crossing from one pipeline stage to the next.
+Prefill transfers `[1,S,H]`; cached decode transfers `[1,1,H]`.
+
 ## Autoregressive generation
 
 Producing text by repeatedly predicting one next token and feeding that token back as input.
@@ -21,8 +26,8 @@ its effective cgroup values and compares them with the launch plan.
 
 ## Container
 
-The isolated Linux environment hosting exactly one rank process in v0.3. Containers share one
-trusted Docker Engine and private bridge network.
+The isolated Linux environment hosting exactly one rank process from v0.3 onward. Containers
+share one trusted Docker Engine and private bridge network.
 
 ## Causal mask
 
@@ -49,10 +54,15 @@ calling a transport and reconstructs received packets as new CPU tensors.
 The generation phase after prefill. Each forward call consumes one previously generated token,
 appends one K/V position per layer, and produces the next logits.
 
+## Control packet
+
+A bounded owned non-tensor payload carried by protocol v2. Pipeline execution uses typed control
+packets for final-stage token feedback and rank-0 continue/stop decisions.
+
 ## Dtype
 
-The numeric representation of tensor elements. F32 uses four bytes; F16 and BF16 use two. v0.1
-generation is validated for CPU/F32.
+The numeric representation of tensor elements. F32 uses four bytes; F16 and BF16 use two.
+Generation through v0.4 is validated for CPU/F32.
 
 ## EOS
 
@@ -101,7 +111,19 @@ Multi-query attention, where all query heads share one key and one value head (`
 ## Placement
 
 The planner's comparison between logical persistent bytes and an optional declared per-rank
-budget. It is not OS memory enforcement.
+For `dlir pipeline`, the same comparison uses the memory limit that Docker then enforces on that
+rank; it still estimates persistent model/cache state rather than peak process RSS.
+
+## Pipeline parallelism (PP)
+
+Partitioning an ordered model into stages and passing residual activations between them. In v0.4,
+`PP=world_size`, stages own contiguous layer ranges, and execution is sequential without
+microbatch overlap.
+
+## Pipeline stage
+
+One rank's local model slice: an assigned non-empty transformer-layer range, a local KV cache, and
+optionally token embeddings on rank 0 or final normalization/LM head on the last rank.
 
 ## Prefill
 
@@ -110,9 +132,10 @@ the first generated token.
 
 ## Rank
 
-One participant in distributed execution. Generation remains on rank 0. In the v0.2 communication
-path, each rank is hosted by one worker thread. In the v0.3 TCP path, each rank owns one process
-inside one Docker container.
+One participant in distributed execution. In the v0.2 communication path, each rank is hosted by
+one worker thread. From v0.3 onward each physical rank owns one process inside one Docker
+container. In v0.4, every rank executes a model stage while rank 0 additionally owns prompt/token
+input and completion emission.
 
 ## Rendezvous
 
@@ -160,18 +183,26 @@ does not preserve application message boundaries.
 
 ## Transport
 
-The boundary that moves owned, tagged tensor packets between ranks. v0.2 provides an in-memory
-channel implementation; v0.3 adds a versioned full-mesh TCP implementation.
+The boundary that moves owned tagged messages between ranks. v0.2 provides in-memory tensor
+channels; v0.3 adds full-mesh TCP; protocol v2 in v0.4 adds a separate bounded control-frame kind
+without weakening source/tag matching.
+
+## TUI
+
+The optional terminal user interface that reduces the same distributed event stream retained by
+the report. It is observational only and has no cluster-management capability.
 
 ## TTFT
 
-Time to first token. In this implementation it includes tokenization and post-load work through
-prefill and first-token selection, but excludes artifact resolution and model loading.
+Time to first token. Single-rank and pipeline reports exclude artifact/model loading. The pipeline
+measurement begins when rank 0 starts prefill after the startup barrier and ends when its first
+non-EOS token is available.
 
 ## Weight tying
 
 Reusing the token embedding matrix as the LM-head matrix. A tied model does not store a separate
-`lm_head.weight`.
+`lm_head.weight`. When embeddings and the output head belong to different pipeline processes, the
+same checkpoint tensor is materialized independently on both ranks and reported as duplication.
 
 ## World size
 

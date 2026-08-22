@@ -1,7 +1,8 @@
 # Docker resource topologies
 
-`dlir launch` turns an explicit total resource budget into one enforced container budget per rank.
-It divides execution capacity, not model weights.
+`dlir launch` and `dlir pipeline` turn an explicit total resource budget into one enforced
+container budget per rank. The equal division is execution capacity; only the pipeline stage plan
+decides which model weights each rank materializes.
 
 ## Planning resources
 
@@ -57,10 +58,12 @@ flowchart TD
     Reports --> Cleanup[Remove only run-labelled resources]
 ```
 
-The image is cached as `dlir:v0.3-tcp`; `--rebuild` uses a fresh build. Container names, network,
-and labels include the run ID. No port is published to the host. Normal completion, failure, and
-interrupt cleanup target only the exact names created by that launch. `--keep-containers` retains
-stopped resources for debugging and never removes the cached image.
+The topology command defaults to `dlir:v0.3-tcp`; pipeline generation defaults to
+`dlir:v0.4-pipeline`. `--rebuild` uses a fresh build. Container names, network, and labels include
+the run ID. No port is published to the host. Normal completion, failure, and interrupt cleanup
+target only the exact names created by that launch. `--keep-containers` retains stopped resources
+for debugging and never removes the cached image. For pipeline runs it also preserves and prints
+the host request-manifest directory.
 
 ## Report meaning
 
@@ -73,6 +76,8 @@ The schema-v1 launch report separates three views:
 Machine-dependent engine capacity and run IDs mean Docker JSON is not byte-for-byte deterministic.
 The topology calculation and ring values are deterministic for the same explicit inputs.
 
-These limits become useful placement inputs for later rank-local model partitions. In v0.3 the
-single-process inference path remains `world_size = 1`, and no checkpoint is loaded by rank
-containers.
+In `dlir launch`, the limits prove only topology and no checkpoint is loaded. In `dlir pipeline`,
+each rank's `StageMemoryPlan` is compared with the exact enforced memory limit before checkpoint
+download. The estimate includes local logical F32 weights and local KV capacity, while observed
+`memory.current`/`memory.max` values are retained separately. Equal container limits do not imply
+equal stage use and do not describe peak RSS.
