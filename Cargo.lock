@@ -548,10 +548,11 @@ dependencies = [
 
 [[package]]
 name = "dlir-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "clap",
+ "dlir-collectives",
  "dlir-runtime",
  "serde_json",
  "tempfile",
@@ -559,8 +560,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "dlir-collectives"
+version = "0.2.0"
+dependencies = [
+ "candle-core",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+]
+
+[[package]]
 name = "dlir-runtime"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "candle-core",
  "candle-nn",
