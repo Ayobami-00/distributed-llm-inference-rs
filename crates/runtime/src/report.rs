@@ -59,6 +59,42 @@ impl Default for TopologyReport {
     }
 }
 
+/// Pipeline execution phase associated with a layer or tensor event.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecutionPhase {
+    /// Multi-token prompt processing.
+    Prefill,
+    /// One-token cached autoregressive processing.
+    Decode,
+}
+
+/// Purpose assigned to a distributed tensor transfer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TensorPurpose {
+    /// Residual-stream activations passed to the next pipeline stage.
+    Activation,
+}
+
+/// Purpose assigned to a bounded pipeline control transfer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ControlPurpose {
+    /// Greedy token ID returned from the final stage to rank 0.
+    TokenFeedback,
+    /// Rank-0 continue/stop decision broadcast to the other stages.
+    Decision,
+}
+
+/// Collective operation represented in the shared event vocabulary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CollectiveKind {
+    /// Reusable centralized rank barrier.
+    Barrier,
+}
+
 /// Payload of one event in the ordered runtime timeline.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -71,6 +107,113 @@ pub enum RunEventKind {
     ModelLoadStarted,
     /// Model and cache construction has finished.
     ModelLoadFinished,
+    /// One global transformer layer is about to execute on its owning rank.
+    LayerStarted {
+        /// Global zero-based transformer-layer index.
+        layer: usize,
+        /// Prefill or decode phase.
+        phase: ExecutionPhase,
+        /// Zero for prefill and one-based for decode.
+        step: usize,
+    },
+    /// One global transformer layer finished executing.
+    LayerCompleted {
+        /// Global zero-based transformer-layer index.
+        layer: usize,
+        /// Prefill or decode phase.
+        phase: ExecutionPhase,
+        /// Zero for prefill and one-based for decode.
+        step: usize,
+        /// Rank-local synchronized compute duration.
+        duration_ns: u64,
+    },
+    /// A collective operation is about to block.
+    CollectiveStarted {
+        /// Collective implementation being entered.
+        collective: CollectiveKind,
+        /// Reusable collective generation.
+        generation: u64,
+    },
+    /// A collective operation completed.
+    CollectiveCompleted {
+        /// Collective implementation that completed.
+        collective: CollectiveKind,
+        /// Reusable collective generation.
+        generation: u64,
+        /// Rank-local collective duration.
+        duration_ns: u64,
+    },
+    /// A tensor was copied and sent to another rank.
+    TensorSent {
+        /// Destination global rank.
+        peer: usize,
+        /// Semantic role of the tensor.
+        purpose: TensorPurpose,
+        /// Prefill or decode phase.
+        phase: ExecutionPhase,
+        /// Zero for prefill and one-based for decode.
+        step: usize,
+        /// Tensor dimensions.
+        shape: Vec<usize>,
+        /// Logical F32 payload bytes.
+        bytes: u64,
+        /// Rank-local copy and send duration.
+        duration_ns: u64,
+    },
+    /// A tensor was received and reconstructed from another rank.
+    TensorReceived {
+        /// Source global rank.
+        peer: usize,
+        /// Semantic role of the tensor.
+        purpose: TensorPurpose,
+        /// Prefill or decode phase.
+        phase: ExecutionPhase,
+        /// Zero for prefill and one-based for decode.
+        step: usize,
+        /// Tensor dimensions.
+        shape: Vec<usize>,
+        /// Logical F32 payload bytes.
+        bytes: u64,
+        /// Rank-local receive and reconstruction duration.
+        duration_ns: u64,
+    },
+    /// A bounded typed control payload was sent to another rank.
+    ControlSent {
+        /// Destination global rank.
+        peer: usize,
+        /// Semantic role of the control message.
+        purpose: ControlPurpose,
+        /// Prefill or decode phase.
+        phase: ExecutionPhase,
+        /// Zero for prefill and one-based for decode.
+        step: usize,
+        /// Logical serialized payload bytes.
+        bytes: u64,
+        /// Rank-local serialization and send duration.
+        duration_ns: u64,
+    },
+    /// A bounded typed control payload was received from another rank.
+    ControlReceived {
+        /// Source global rank.
+        peer: usize,
+        /// Semantic role of the control message.
+        purpose: ControlPurpose,
+        /// Prefill or decode phase.
+        phase: ExecutionPhase,
+        /// Zero for prefill and one-based for decode.
+        step: usize,
+        /// Logical serialized payload bytes.
+        bytes: u64,
+        /// Rank-local receive and deserialization duration.
+        duration_ns: u64,
+    },
+    /// A rank sampled its current enforced-container memory state.
+    MemorySample {
+        /// Current cgroup memory usage, when available.
+        current_bytes: Option<u64>,
+        /// Enforced cgroup memory maximum, when available.
+        limit_bytes: Option<u64>,
+    },
     /// The synchronized prompt forward is about to run.
     PrefillStarted {
         /// Number of tokens in the rendered prompt.
@@ -107,9 +250,9 @@ pub enum RunEventKind {
 pub struct RunEvent {
     /// Zero-based event order within this request.
     pub sequence: u64,
-    /// Emitting global rank; always zero in v0.1.
+    /// Emitting global rank; zero for single-rank generation.
     pub rank: usize,
-    /// Nanoseconds elapsed since the generation function was entered.
+    /// Nanoseconds elapsed since the emitting rank entered the request.
     pub elapsed_ns: u64,
     /// Event-specific discriminator and payload, flattened into JSON.
     #[serde(flatten)]

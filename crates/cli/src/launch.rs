@@ -26,10 +26,10 @@ const MIN_WORLD_SIZE: usize = 2;
 const MAX_WORLD_SIZE: usize = 64;
 const MIN_CPU_MILLIS: u64 = 100;
 const MIN_MEMORY_BYTES: u64 = 128 * 1024 * 1024;
-const MIB: u64 = 1024 * 1024;
-const RUN_LABEL: &str = "io.dlir.run_id";
-const RENDEZVOUS_PORT: u16 = 29_500;
-const PEER_PORT: u16 = 29_501;
+pub(crate) const MIB: u64 = 1024 * 1024;
+pub(crate) const RUN_LABEL: &str = "io.dlir.run_id";
+pub(crate) const RENDEZVOUS_PORT: u16 = 29_500;
+pub(crate) const PEER_PORT: u16 = 29_501;
 const RING_TAG: MessageTag = MessageTag(0);
 
 static INTERRUPTED: AtomicBool = AtomicBool::new(false);
@@ -38,7 +38,7 @@ static INTERRUPT_HANDLER: OnceLock<()> = OnceLock::new();
 /// Positive CPU quantity stored in thousandths of one CPU.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct CpuAmount {
-    millis: u64,
+    pub(crate) millis: u64,
 }
 
 impl CpuAmount {
@@ -122,13 +122,13 @@ pub(crate) struct RankRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-struct DockerEngineReport {
-    server_version: String,
-    operating_system: String,
-    architecture: String,
-    cgroup_version: String,
-    cpu_millis: u64,
-    memory_bytes: u64,
+pub(crate) struct DockerEngineReport {
+    pub(crate) server_version: String,
+    pub(crate) operating_system: String,
+    pub(crate) architecture: String,
+    pub(crate) cgroup_version: String,
+    pub(crate) cpu_millis: u64,
+    pub(crate) memory_bytes: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -148,32 +148,32 @@ struct DockerInfoJson {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-struct ResourcePlan {
-    requested_cpu_millis: u64,
-    requested_memory_bytes: u64,
-    per_rank_cpu_millis: u64,
-    per_rank_memory_bytes: u64,
-    allocated_cpu_millis: u64,
-    allocated_memory_bytes: u64,
-    unused_cpu_millis: u64,
-    unused_memory_bytes: u64,
-    engine_cpu_headroom_millis: u64,
-    engine_memory_headroom_bytes: u64,
+pub(crate) struct ResourcePlan {
+    pub(crate) requested_cpu_millis: u64,
+    pub(crate) requested_memory_bytes: u64,
+    pub(crate) per_rank_cpu_millis: u64,
+    pub(crate) per_rank_memory_bytes: u64,
+    pub(crate) allocated_cpu_millis: u64,
+    pub(crate) allocated_memory_bytes: u64,
+    pub(crate) unused_cpu_millis: u64,
+    pub(crate) unused_memory_bytes: u64,
+    pub(crate) engine_cpu_headroom_millis: u64,
+    pub(crate) engine_memory_headroom_bytes: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-struct ResourceObservation {
-    cpu_millis: Option<u64>,
-    memory_limit_bytes: Option<u64>,
-    memory_current_bytes: Option<u64>,
-    cpuset_cpus: Option<String>,
-    cpuset_cpu_count: Option<usize>,
-    cgroup_version: Option<String>,
+pub(crate) struct ResourceObservation {
+    pub(crate) cpu_millis: Option<u64>,
+    pub(crate) memory_limit_bytes: Option<u64>,
+    pub(crate) memory_current_bytes: Option<u64>,
+    pub(crate) cpuset_cpus: Option<String>,
+    pub(crate) cpuset_cpu_count: Option<usize>,
+    pub(crate) cgroup_version: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-enum ResourceVerification {
+pub(crate) enum ResourceVerification {
     Passed,
     NotEvaluated,
 }
@@ -440,7 +440,7 @@ fn validate_world_size(world_size: usize) -> Result<()> {
     Ok(())
 }
 
-fn plan_resources(
+pub(crate) fn plan_resources(
     world_size: usize,
     total_cpus: CpuAmount,
     total_memory: u64,
@@ -492,7 +492,7 @@ fn plan_resources(
     })
 }
 
-fn docker_engine_info() -> Result<DockerEngineReport> {
+pub(crate) fn docker_engine_info() -> Result<DockerEngineReport> {
     let output = docker_checked(&[
         "info".to_owned(),
         "--format".to_owned(),
@@ -513,7 +513,7 @@ fn docker_engine_info() -> Result<DockerEngineReport> {
     })
 }
 
-fn ensure_image(image: &str, context: &Path, rebuild: bool) -> Result<()> {
+pub(crate) fn ensure_image(image: &str, context: &Path, rebuild: bool) -> Result<()> {
     if image.trim().is_empty() {
         bail!("Docker image name cannot be empty");
     }
@@ -655,13 +655,13 @@ fn wait_for_containers(
     Ok(exit_codes)
 }
 
-fn stop_containers(names: &[String]) {
+pub(crate) fn stop_containers(names: &[String]) {
     for name in names {
         let _ = docker_output(&["kill".to_owned(), name.clone()]);
     }
 }
 
-fn docker_checked(arguments: &[String]) -> Result<Output> {
+pub(crate) fn docker_checked(arguments: &[String]) -> Result<Output> {
     let output = docker_output(arguments)?;
     if output.status.success() {
         Ok(output)
@@ -680,21 +680,21 @@ fn docker_checked(arguments: &[String]) -> Result<Output> {
     }
 }
 
-fn docker_output(arguments: &[String]) -> Result<Output> {
+pub(crate) fn docker_output(arguments: &[String]) -> Result<Output> {
     Command::new("docker")
         .args(arguments)
         .output()
         .with_context(|| format!("could not execute `docker {}`", arguments.join(" ")))
 }
 
-struct DockerResources {
-    network: String,
-    containers: Vec<String>,
-    keep: bool,
+pub(crate) struct DockerResources {
+    pub(crate) network: String,
+    pub(crate) containers: Vec<String>,
+    pub(crate) keep: bool,
 }
 
 impl DockerResources {
-    fn cleanup(&mut self) {
+    pub(crate) fn cleanup(&mut self) {
         if self.keep {
             return;
         }
@@ -718,7 +718,7 @@ impl Drop for DockerResources {
     }
 }
 
-fn install_interrupt_handler() -> Result<()> {
+pub(crate) fn install_interrupt_handler() -> Result<()> {
     if INTERRUPT_HANDLER.get().is_none() {
         ctrlc::set_handler(|| INTERRUPTED.store(true, Ordering::SeqCst))
             .context("could not install interrupt handler")?;
@@ -727,7 +727,19 @@ fn install_interrupt_handler() -> Result<()> {
     Ok(())
 }
 
-fn observe_cgroup_resources() -> ResourceObservation {
+pub(crate) fn reset_interrupted() {
+    INTERRUPTED.store(false, Ordering::SeqCst);
+}
+
+pub(crate) fn is_interrupted() -> bool {
+    INTERRUPTED.load(Ordering::SeqCst)
+}
+
+pub(crate) fn request_interrupt() {
+    INTERRUPTED.store(true, Ordering::SeqCst);
+}
+
+pub(crate) fn observe_cgroup_resources() -> ResourceObservation {
     let v2_cpu = read_optional("/sys/fs/cgroup/cpu.max");
     let v2_memory = read_optional("/sys/fs/cgroup/memory.max");
     if v2_cpu.is_some() || v2_memory.is_some() {
@@ -765,7 +777,7 @@ fn observe_cgroup_resources() -> ResourceObservation {
     }
 }
 
-fn verify_resources(
+pub(crate) fn verify_resources(
     observed: &ResourceObservation,
     expected_cpu_millis: Option<u64>,
     expected_memory_bytes: Option<u64>,
@@ -859,7 +871,7 @@ fn values_for_rank(rank: usize) -> Vec<f32> {
     (base..base + 4).map(|value| value as f32).collect()
 }
 
-fn validate_run_id(run_id: &str) -> Result<()> {
+pub(crate) fn validate_run_id(run_id: &str) -> Result<()> {
     if run_id.is_empty()
         || run_id.len() > 48
         || !run_id
@@ -871,7 +883,7 @@ fn validate_run_id(run_id: &str) -> Result<()> {
     Ok(())
 }
 
-fn default_run_id() -> String {
+pub(crate) fn default_run_id() -> String {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -879,7 +891,7 @@ fn default_run_id() -> String {
     format!("{}-{nanos}", std::process::id())
 }
 
-fn format_cpu(millis: u64) -> String {
+pub(crate) fn format_cpu(millis: u64) -> String {
     let whole = millis / 1000;
     let fraction = millis % 1000;
     if fraction == 0 {

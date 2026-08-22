@@ -11,11 +11,14 @@ The workspace requires Rust 1.85 or newer. From the repository root:
 cargo build --release --locked
 ```
 
-The executable is `target/release/dlir`. The three crates have separate responsibilities:
+The executable is `target/release/dlir`. The five crates have separate responsibilities:
 
 - `dlir-cli` parses commands and owns terminal and file output.
 - `dlir-collectives` owns logical ranks and point-to-point tensor communication.
 - `dlir-runtime` owns model knowledge, inference, memory planning, and reports.
+- `dlir-pipeline` composes stage planning, stage-local execution, control messages, events, and
+  distributed reports.
+- `dlir-tui` projects pipeline events into a read-only Ratatui dashboard.
 
 ## Exchange tensors between ranks
 
@@ -69,6 +72,47 @@ The command verifies four independent facts: every container exposes the request
 rendezvous returns the same ordered world to every rank, the full TCP mesh can exchange the ring
 tensors, and both barrier generations complete. Docker diagnostics use stderr; text or schema-v1
 JSON uses stdout. See [Docker resource topologies](docker-topologies.md).
+
+## Generate across pipeline stages
+
+The first distributed model execution uses the same Docker/TCP foundation:
+
+```console
+./target/release/dlir pipeline \
+  --model smollm2-135m-instruct \
+  --device cpu \
+  --dtype f32 \
+  --prompt "Explain pipeline parallelism." \
+  --max-new-tokens 8 \
+  --nproc 2 \
+  --total-cpus 2 \
+  --total-memory 2GiB \
+  --report pipeline-run.json
+```
+
+On a cold machine the command downloads the same pinned SmolLM2 artifacts used by `generate` and
+builds `dlir:v0.4-pipeline` if missing. The host checks both stage placements before downloading
+weights, mounts the validated artifacts read-only, and gives each rank one CPU quota and 1 GiB.
+Timings depend on hardware, Docker Desktop/Engine capacity, image state, and artifact cache state.
+
+The final output boundary is:
+
+| Destination | Pipeline content |
+| --- | --- |
+| Standard output | Assistant completion only |
+| Standard error | Host/rank progress and the human distributed summary |
+| `--report` file | Complete schema-v1 pipeline report, rank reports, and events |
+
+Add `--tui` only from an interactive terminal. The dashboard displays model/topology, stage ranges,
+current layer and phase, compute/communication durations, memory, TTFT, decode time, token count,
+and bytes. `q`/Esc disables the dashboard without stopping inference; Ctrl-C requests scoped
+launcher cancellation.
+
+This is a sequential batch-one pipeline. It demonstrates that each rank loads and executes only
+its stage and that autoregressive feedback closes the loop. It has no microbatch overlap and is
+not expected to improve tokens/second. See
+[Pipeline partitioning and execution](pipeline-parallelism.md) and
+[Distributed events and the observational TUI](events-and-tui.md).
 
 ## List supported models
 

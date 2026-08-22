@@ -6,5 +6,5 @@
 mod cache;
 mod llama;
 
-pub use cache::KvCache;
-pub use llama::Llama;
+pub use cache::{KvCache, StageKvCache};
+pub use llama::{LayerObserver, Llama, LlamaStage, NoopLayerObserver};

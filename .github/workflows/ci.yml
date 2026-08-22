@@ -40,14 +40,14 @@ jobs:
           toolchain: "1.85"
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --locked -p dlir-cli
-      - run: docker build --tag dlir:v0.3-tcp .
+      - run: docker build --tag dlir:v0.4-pipeline .
       - name: Launch two constrained TCP ranks
         run: |
           ./target/debug/dlir launch \
             --nproc 2 \
             --total-cpus 1 \
             --total-memory 512MiB \
-            --image dlir:v0.3-tcp \
+            --image dlir:v0.4-pipeline \
             --run-id ci-${{ github.run_id }}-${{ github.run_attempt }} \
             --format json > /tmp/dlir-v0.3-report.json
           jq -e '
@@ -55,6 +55,7 @@ jobs:
             .world_size == 2 and
             .resources.per_rank_cpu_millis == 500 and
             .resources.per_rank_memory_bytes == 268435456 and
+            ([.ranks[].report.protocol_version] | all(. == 2)) and
             ([.ranks[].report.resource_verification] | all(. == "passed")) and
             ([.ranks[].report.startup_barrier] | all) and
             ([.ranks[].report.completion_barrier] | all)

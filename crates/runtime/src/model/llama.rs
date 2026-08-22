@@ -10,6 +10,26 @@ use candle_core::{DType, Device, IndexOp, Tensor};
 use candle_nn::{
     Embedding, Linear, Module, RmsNorm, VarBuilder, embedding, linear_no_bias, rms_norm,
 };
+use std::time::{Duration, Instant};
+
+/// Receives live transformer-layer execution boundaries from a pipeline stage.
+pub trait LayerObserver {
+    /// Called immediately before a global transformer layer starts.
+    fn layer_started(&mut self, layer: usize);
+
+    /// Called after the layer finishes, with its local compute duration.
+    fn layer_completed(&mut self, layer: usize, duration: Duration);
+}
+
+/// Layer observer that discards all notifications.
+#[derive(Default)]
+pub struct NoopLayerObserver;
+
+impl LayerObserver for NoopLayerObserver {
+    fn layer_started(&mut self, _layer: usize) {}
+
+    fn layer_completed(&mut self, _layer: usize, _duration: Duration) {}
+}
 
 #[derive(Debug)]
 struct RotaryEmbedding {
@@ -325,6 +345,171 @@ impl Llama {
     }
 }
 
+/// One contiguous rank-local slice of the owned Llama model.
+///
+/// The first stage owns token embeddings, the final stage owns normalization and the language
+/// model head, and every stage materializes only the transformer blocks in its half-open layer
+/// range.
+#[derive(Debug)]
+pub struct LlamaStage {
+    layer_start: usize,
+    layer_end: usize,
+    embeddings: Option<Embedding>,
+    blocks: Vec<Block>,
+    final_norm: Option<RmsNorm>,
+    lm_head: Option<Linear>,
+    rope: RotaryEmbedding,
+}
+
+impl LlamaStage {
+    /// Loads a contiguous model stage and precomputes its RoPE tables.
+    #[allow(clippy::too_many_arguments)]
+    pub fn load(
+        vb: VarBuilder<'_>,
+        config: &ModelConfig,
+        layer_start: usize,
+        layer_end: usize,
+        first_stage: bool,
+        final_stage: bool,
+        capacity: usize,
+    ) -> Result<Self> {
+        if layer_start >= layer_end || layer_end > config.num_hidden_layers {
+            return Err(DlirError::InvalidConfig(format!(
+                "stage layer range {layer_start}..{layer_end} is outside 0..{}",
+                config.num_hidden_layers
+            )));
+        }
+        let embeddings = first_stage
+            .then(|| {
+                embedding(
+                    config.vocab_size,
+                    config.hidden_size,
+                    vb.pp("model.embed_tokens"),
+                )
+            })
+            .transpose()?;
+        let blocks = (layer_start..layer_end)
+            .map(|index| Block::load(vb.pp(format!("model.layers.{index}")), config))
+            .collect::<Result<Vec<_>>>()?;
+        let final_norm = final_stage
+            .then(|| rms_norm(config.hidden_size, config.rms_norm_eps, vb.pp("model.norm")))
+            .transpose()?;
+        let lm_head = if final_stage {
+            Some(if config.tie_word_embeddings {
+                let output_embeddings = embedding(
+                    config.vocab_size,
+                    config.hidden_size,
+                    vb.pp("model.embed_tokens"),
+                )?;
+                Linear::new(output_embeddings.embeddings().clone(), None)
+            } else {
+                linear_no_bias(config.hidden_size, config.vocab_size, vb.pp("lm_head"))?
+            })
+        } else {
+            None
+        };
+        let rope = RotaryEmbedding::new(config, capacity, vb.dtype(), vb.device())?;
+        Ok(Self {
+            layer_start,
+            layer_end,
+            embeddings,
+            blocks,
+            final_norm,
+            lm_head,
+            rope,
+        })
+    }
+
+    /// Returns the half-open global layer range executed by this stage.
+    pub fn layer_range(&self) -> std::ops::Range<usize> {
+        self.layer_start..self.layer_end
+    }
+
+    /// Embeds batch-one token IDs and executes the first stage's local transformer blocks.
+    pub fn forward_tokens(
+        &self,
+        token_ids: &Tensor,
+        position: usize,
+        cache: &mut KvCache,
+        observer: &mut dyn LayerObserver,
+    ) -> Result<Tensor> {
+        let embeddings = self.embeddings.as_ref().ok_or_else(|| {
+            DlirError::InvalidConfig("only the first pipeline stage accepts token IDs".into())
+        })?;
+        let (batch, sequence) = token_ids.dims2()?;
+        if batch != 1 || sequence == 0 {
+            return Err(DlirError::InvalidConfig(format!(
+                "pipeline token input must have shape [1,S] with S>0, got {:?}",
+                token_ids.dims()
+            )));
+        }
+        let hidden = embeddings.forward(token_ids)?;
+        self.forward_hidden(&hidden, position, cache, observer)
+    }
+
+    /// Executes this stage's transformer blocks over `[1,S,H]` residual activations.
+    pub fn forward_hidden(
+        &self,
+        hidden: &Tensor,
+        position: usize,
+        cache: &mut KvCache,
+        observer: &mut dyn LayerObserver,
+    ) -> Result<Tensor> {
+        let (batch, sequence, _) = hidden.dims3()?;
+        if batch != 1 || sequence == 0 {
+            return Err(DlirError::InvalidConfig(format!(
+                "pipeline activation must have shape [1,S,H] with S>0, got {:?}",
+                hidden.dims()
+            )));
+        }
+        if cache.layer_count() != self.blocks.len() {
+            return Err(DlirError::InvalidConfig(format!(
+                "stage has {} blocks but cache has {} layers",
+                self.blocks.len(),
+                cache.layer_count()
+            )));
+        }
+        if position != cache.len() {
+            return Err(DlirError::InvalidConfig(format!(
+                "forward position {position} does not match cache length {}",
+                cache.len()
+            )));
+        }
+        if position + sequence > cache.capacity() {
+            return Err(DlirError::CacheCapacityExceeded {
+                attempted: position + sequence,
+                capacity: cache.capacity(),
+            });
+        }
+        let mut hidden = hidden.clone();
+        for (local_layer, block) in self.blocks.iter().enumerate() {
+            let global_layer = self.layer_start + local_layer;
+            observer.layer_started(global_layer);
+            let started = Instant::now();
+            hidden = block.forward(&hidden, position, local_layer, &self.rope, cache)?;
+            observer.layer_completed(global_layer, started.elapsed());
+        }
+        Ok(hidden)
+    }
+
+    /// Applies the final normalization and LM head and returns final-position F32 logits.
+    pub fn finish(&self, hidden: &Tensor) -> Result<Tensor> {
+        let final_norm = self.final_norm.as_ref().ok_or_else(|| {
+            DlirError::InvalidConfig("only the final pipeline stage produces logits".into())
+        })?;
+        let lm_head = self.lm_head.as_ref().expect("final stage has LM head");
+        let (_, sequence, _) = hidden.dims3()?;
+        if sequence == 0 {
+            return Err(DlirError::InvalidConfig(
+                "final pipeline activation has zero sequence length".into(),
+            ));
+        }
+        let hidden = final_norm.forward(hidden)?;
+        let last = hidden.i((.., sequence - 1, ..))?.contiguous()?;
+        Ok(lm_head.forward(&last)?.to_dtype(DType::F32)?)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -490,6 +675,64 @@ mod tests {
         assert_close(&ours, &recomputed);
     }
 
+    fn compare_pipeline_stages(stage_count: usize, tied: bool) {
+        let device = Device::Cpu;
+        let mut config = config(tied);
+        config.num_hidden_layers = 4;
+        let tensors = fixture(&config, &device);
+        let full = Llama::load(
+            VarBuilder::from_tensors(tensors.clone(), DType::F32, &device),
+            &config,
+            8,
+        )
+        .unwrap();
+        let mut full_cache = KvCache::new(&config, 8, DType::F32, &device).unwrap();
+
+        let base = config.num_hidden_layers / stage_count;
+        let remainder = config.num_hidden_layers % stage_count;
+        let mut layer_start = 0;
+        let mut stages = Vec::new();
+        let mut caches = Vec::new();
+        for rank in 0..stage_count {
+            let layer_count = base + usize::from(rank < remainder);
+            let layer_end = layer_start + layer_count;
+            stages.push(
+                LlamaStage::load(
+                    VarBuilder::from_tensors(tensors.clone(), DType::F32, &device),
+                    &config,
+                    layer_start,
+                    layer_end,
+                    rank == 0,
+                    rank + 1 == stage_count,
+                    8,
+                )
+                .unwrap(),
+            );
+            caches.push(
+                KvCache::new_for_layers(&config, layer_count, 8, DType::F32, &device).unwrap(),
+            );
+            layer_start = layer_end;
+        }
+
+        for (token_ids, position) in [
+            (Tensor::new(&[[1u32, 3, 5]], &device).unwrap(), 0),
+            (Tensor::new(&[[7u32]], &device).unwrap(), 3),
+        ] {
+            let expected = full.forward(&token_ids, position, &mut full_cache).unwrap();
+            let mut observer = NoopLayerObserver;
+            let mut hidden = stages[0]
+                .forward_tokens(&token_ids, position, &mut caches[0], &mut observer)
+                .unwrap();
+            for rank in 1..stage_count {
+                hidden = stages[rank]
+                    .forward_hidden(&hidden, position, &mut caches[rank], &mut observer)
+                    .unwrap();
+            }
+            let actual = stages.last().unwrap().finish(&hidden).unwrap();
+            assert_close(&actual, &expected);
+        }
+    }
+
     #[test]
     fn grouped_query_cached_logits_match_candle_oracle_with_tied_head() {
         compare_with_oracle(true);
@@ -498,6 +741,14 @@ mod tests {
     #[test]
     fn grouped_query_cached_logits_match_candle_oracle_with_untied_head() {
         compare_with_oracle(false);
+    }
+
+    #[test]
+    fn two_three_and_four_stage_cached_logits_match_monolithic_llama() {
+        for stage_count in [2, 3, 4] {
+            compare_pipeline_stages(stage_count, true);
+            compare_pipeline_stages(stage_count, false);
+        }
     }
 
     #[test]

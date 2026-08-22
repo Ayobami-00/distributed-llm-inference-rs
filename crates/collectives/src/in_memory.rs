@@ -1,8 +1,9 @@
 //! In-memory transport whose ranks exchange owned messages through FIFO channels.
 
-use crate::transport::MessageFrame;
+use crate::transport::{MessageFrame, MessagePayload};
 use crate::{
-    BarrierTransport, CollectivesError, MessageTag, Rank, Result, TensorPacket, Transport,
+    BarrierTransport, CollectivesError, ControlPacket, ControlTransport, MessageTag, Rank, Result,
+    TensorPacket, Transport,
 };
 use std::{
     collections::VecDeque,
@@ -173,7 +174,7 @@ impl Transport for InMemoryTransport {
                 source: self.rank.global_rank(),
                 destination,
                 tag,
-                packet,
+                payload: MessagePayload::Tensor(packet),
             })
             .map_err(|_| CollectivesError::SendDisconnected {
                 rank: self.rank.global_rank(),
@@ -227,15 +228,20 @@ impl Transport for InMemoryTransport {
 
             debug_assert_eq!(frame.source, source);
             debug_assert_eq!(frame.destination, self.rank.global_rank());
-            if frame.tag == tag {
-                return Ok(frame.packet);
+            match frame {
+                MessageFrame {
+                    tag: actual,
+                    payload: MessagePayload::Tensor(packet),
+                    ..
+                } if actual == tag => return Ok(packet),
+                other => self
+                    .pending
+                    .lock()
+                    .map_err(|_| CollectivesError::Synchronization {
+                        rank: self.rank.global_rank(),
+                    })?
+                    .push_back(other),
             }
-            self.pending
-                .lock()
-                .map_err(|_| CollectivesError::Synchronization {
-                    rank: self.rank.global_rank(),
-                })?
-                .push_back(frame);
         }
     }
 }
@@ -248,12 +254,121 @@ impl InMemoryTransport {
             .map_err(|_| CollectivesError::Synchronization {
                 rank: self.rank.global_rank(),
             })?;
-        let Some(index) = pending
-            .iter()
-            .position(|frame| frame.source == source && frame.tag == tag)
-        else {
+        let Some(index) = pending.iter().position(|frame| {
+            frame.source == source
+                && frame.tag == tag
+                && matches!(frame.payload, MessagePayload::Tensor(_))
+        }) else {
             return Ok(None);
         };
-        Ok(pending.remove(index).map(|frame| frame.packet))
+        Ok(pending.remove(index).map(|frame| match frame.payload {
+            MessagePayload::Tensor(packet) => packet,
+            MessagePayload::Control(_) => unreachable!("matched tensor payload"),
+        }))
+    }
+}
+
+impl ControlTransport for InMemoryTransport {
+    fn send_control(
+        &self,
+        destination: usize,
+        tag: MessageTag,
+        packet: ControlPacket,
+    ) -> Result<()> {
+        self.rank.validate_peer(destination)?;
+        self.senders[destination]
+            .as_ref()
+            .expect("validated distinct peers always have a sender")
+            .send(MessageFrame {
+                source: self.rank.global_rank(),
+                destination,
+                tag,
+                payload: MessagePayload::Control(packet),
+            })
+            .map_err(|_| CollectivesError::SendDisconnected {
+                rank: self.rank.global_rank(),
+                destination,
+                tag,
+            })
+    }
+
+    fn recv_control(&self, source: usize, tag: MessageTag) -> Result<ControlPacket> {
+        self.rank.validate_peer(source)?;
+        if let Some(packet) = self.take_pending_control(source, tag)? {
+            return Ok(packet);
+        }
+        let started = Instant::now();
+        let receiver = self.receivers[source]
+            .as_ref()
+            .expect("validated distinct peers always have a receiver")
+            .lock()
+            .map_err(|_| CollectivesError::Synchronization {
+                rank: self.rank.global_rank(),
+            })?;
+        loop {
+            let remaining = self.receive_timeout.checked_sub(started.elapsed()).ok_or(
+                CollectivesError::ReceiveTimeout {
+                    rank: self.rank.global_rank(),
+                    source_rank: source,
+                    tag,
+                    timeout: self.receive_timeout,
+                },
+            )?;
+            let frame = receiver
+                .recv_timeout(remaining)
+                .map_err(|error| match error {
+                    mpsc::RecvTimeoutError::Timeout => CollectivesError::ReceiveTimeout {
+                        rank: self.rank.global_rank(),
+                        source_rank: source,
+                        tag,
+                        timeout: self.receive_timeout,
+                    },
+                    mpsc::RecvTimeoutError::Disconnected => CollectivesError::ReceiveDisconnected {
+                        rank: self.rank.global_rank(),
+                        source_rank: source,
+                        tag,
+                    },
+                })?;
+            match frame {
+                MessageFrame {
+                    tag: actual,
+                    payload: MessagePayload::Control(packet),
+                    ..
+                } if actual == tag => return Ok(packet),
+                other => self
+                    .pending
+                    .lock()
+                    .map_err(|_| CollectivesError::Synchronization {
+                        rank: self.rank.global_rank(),
+                    })?
+                    .push_back(other),
+            }
+        }
+    }
+}
+
+impl InMemoryTransport {
+    fn take_pending_control(
+        &self,
+        source: usize,
+        tag: MessageTag,
+    ) -> Result<Option<ControlPacket>> {
+        let mut pending = self
+            .pending
+            .lock()
+            .map_err(|_| CollectivesError::Synchronization {
+                rank: self.rank.global_rank(),
+            })?;
+        let Some(index) = pending.iter().position(|frame| {
+            frame.source == source
+                && frame.tag == tag
+                && matches!(frame.payload, MessagePayload::Control(_))
+        }) else {
+            return Ok(None);
+        };
+        Ok(pending.remove(index).map(|frame| match frame.payload {
+            MessagePayload::Control(packet) => packet,
+            MessagePayload::Tensor(_) => unreachable!("matched control payload"),
+        }))
     }
 }
