@@ -25,3 +25,7 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets --no-deps --locked -- -D warnings
       - run: cargo test --workspace --all-targets --locked
+      - run: cargo test --workspace --doc --locked
+      - run: cargo doc --workspace --no-deps --document-private-items --locked
+        env:
+          RUSTDOCFLAGS: "-D warnings"
