@@ -6,8 +6,7 @@ use candle_core::{DType, Device, Tensor};
 /// Owned tensor metadata and values transferred between ranks.
 ///
 /// A packet deliberately owns a `Vec<f32>` instead of retaining a Candle [`Tensor`] handle. This
-/// makes the in-memory backend exercise the same copy boundary required by a future network
-/// transport.
+/// makes the in-memory backend exercise the same owned-copy boundary used by the TCP transport.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TensorPacket {
     shape: Vec<usize>,

@@ -193,8 +193,8 @@ There is no arbitrary Hub ID, local checkpoint path, revision override, or custo
 
 | `dlir` model ID | Pinned Hugging Face repository | Parameters | Max context | CPU/F32 | CUDA |
 | --- | --- | ---: | ---: | --- | --- |
-| `smollm2-135m-instruct` | `HuggingFaceTB/SmolLM2-135M-Instruct` at `12fd25f77366fa6b3b4b768ec3050bf629380bac` | 134,515,008 | 8,192 | validated | planned |
-| `tinyllama-1.1b-chat` | `TinyLlama/TinyLlama-1.1B-Chat-v1.0` at `5243d158d6f4b356f1142ea8fd6a99cb5ac2c0e1` | 1,100,048,384 | 2,048 | validated | planned |
+| `smollm2-135m-instruct` | `HuggingFaceTB/SmolLM2-135M-Instruct` at `12fd25f77366fa6b3b4b768ec3050bf629380bac` | 134,515,008 | 8,192 | validated | unsupported |
+| `tinyllama-1.1b-chat` | `TinyLlama/TinyLlama-1.1B-Chat-v1.0` at `5243d158d6f4b356f1142ea8fd6a99cb5ac2c0e1` | 1,100,048,384 | 2,048 | validated | unsupported |
 
 List the registry without network access:
 
@@ -306,9 +306,9 @@ require several gigabytes of host memory because runtime weights are F32.
 
 ## Release checkpoints
 
-Each tag is intended to leave the project in a runnable, measurable state that supports one
-checkpoint in the accompanying article. Only tags marked **Released** currently exist;
-the remaining names describe the planned progression and may be refined as the work develops.
+Each tag leaves the project in a runnable, measurable state that supports one checkpoint in the
+accompanying article. The implemented series ends at `v0.5-tensor`; this repository does not
+announce or commit to later checkpoints.
 
 | Tag | Status | What it contains |
 | --- | --- | --- |
@@ -317,7 +317,3 @@ the remaining names describe the planned progression and may be refined as the w
 | [`v0.3-tcp`](https://github.com/Ayobami-00/distributed-llm-inference-rs/tree/v0.3-tcp) | Released | One rank per process and Docker container; versioned TCP transport; rank-0 rendezvous; a full peer mesh; reusable barrier synchronization; enforced per-rank CPU/memory limits; and reproducible text/JSON topology reports. |
 | [`v0.4-pipeline`](https://github.com/Ayobami-00/distributed-llm-inference-rs/tree/v0.4-pipeline) | Released | Balanced contiguous pipeline stages; rank-local weight and KV-cache materialization; TCP activation transfer; typed autoregressive token feedback; per-stage placement and distributed schema-v1 reports; and an optional read-only Ratatui event dashboard. |
 | [`v0.5-tensor`](https://github.com/Ayobami-00/distributed-llm-inference-rs/tree/v0.5-tensor) | Released | Native broadcast, reduce, all-gather, reduce-scatter, all-to-all, centralized/ring all-reduce, strict tensor-sharded Llama execution, distributed greedy generation, live TUI events, Docker/TCP collective benchmarks, and schema-v1 reports. |
-| `v0.6-hybrid` | Planned | Process groups and combined tensor and pipeline parallelism, including topology-aware memory and communication measurements. |
-| `v0.7-cuda-nccl` | Planned | CUDA execution and an NCCL communicator implementing the same distributed semantics used by the CPU backends. |
-| `v0.8-expert` | Planned | A small mixture-of-experts model, expert placement, top-k token routing, and all-to-all expert-parallel execution. |
-| `v1.0-lab` | Planned | PP-versus-TP experiments, per-rank observability, communication and idle-time metrics, and a terminal UI for comparing distributed inference trade-offs. |

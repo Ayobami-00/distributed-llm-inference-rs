@@ -148,7 +148,7 @@ pub struct TensorParallelReport {
     pub tensor_parallel: usize,
     /// Pipeline group size; one.
     pub pipeline_parallel: usize,
-    /// Expert group size; one.
+    /// Expert dimension size; always one in supported execution.
     pub expert_parallel: usize,
     /// Exact partition and logical memory plan.
     pub partition: TensorParallelPartition,

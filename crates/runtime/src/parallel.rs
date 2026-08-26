@@ -6,10 +6,10 @@ use candle_nn::{Embedding, Linear, Module};
 use dlir_collectives::{AllReduceAlgorithm, CollectiveCommunicator, ReduceOp};
 use serde::{Deserialize, Serialize};
 
-/// Coordinates one rank's tensor, pipeline, and expert process-group identities.
+/// Coordinates one rank's tensor, pipeline, and fixed single-member expert dimensions.
 ///
 /// v0.5 uses only the tensor dimensions: `tp_rank=global_rank`, `tp_size=world_size`, while
-/// pipeline and expert sizes remain one.
+/// pipeline and expert sizes remain one. The project implements no expert-parallel executor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ParallelContext {
     tp_rank: usize,
@@ -67,11 +67,11 @@ impl ParallelContext {
     pub const fn pp_size(self) -> usize {
         self.pp_size
     }
-    /// Expert-parallel rank.
+    /// Expert dimension rank; always zero in supported execution.
     pub const fn ep_rank(self) -> usize {
         self.ep_rank
     }
-    /// Expert-parallel world size.
+    /// Expert dimension size; always one in supported execution.
     pub const fn ep_size(self) -> usize {
         self.ep_size
     }

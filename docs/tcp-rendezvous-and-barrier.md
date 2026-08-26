@@ -94,4 +94,4 @@ reusable semantics with a condition variable and broken-generation state.
 TCP is intentionally unencrypted and unauthenticated in this checkpoint. The run ID prevents
 accidental stale-world mixing but is not a credential. The supported topology is one trusted
 Docker bridge on one engine. Cross-host routing, TLS, elastic membership, and recovery after a
-rank disappears remain future work.
+rank disappears are not implemented and are outside the project's final scope.

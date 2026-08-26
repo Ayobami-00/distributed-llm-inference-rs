@@ -216,7 +216,7 @@ pub struct PipelineReport {
     pub tensor_parallel: usize,
     /// Pipeline-parallel size; equal to `world_size`.
     pub pipeline_parallel: usize,
-    /// Expert-parallel size; one in v0.4.
+    /// Expert dimension size; always one in supported execution.
     pub expert_parallel: usize,
     /// Stage assignment.
     pub partition: PipelinePartition,

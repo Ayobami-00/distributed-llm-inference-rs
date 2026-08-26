@@ -795,7 +795,7 @@ fn print_models(format: OutputFormat) -> Result<()> {
                     spec.config.max_position_embeddings
                 );
                 println!("  CPU/F32:          validated");
-                println!("  CUDA:             planned");
+                println!("  CUDA:             unsupported");
                 println!("  chat template:    {}", spec.prompt_template.name());
             }
         }
@@ -830,7 +830,7 @@ fn model_json(spec: &ModelSpec) -> serde_json::Value {
         "chat_template": spec.prompt_template.name(),
         "execution": {
             "cpu_f32": "validated",
-            "cuda": "planned",
+            "cuda": "unsupported",
         },
     })
 }
@@ -1203,7 +1203,7 @@ mod tests {
             "5243d158d6f4b356f1142ea8fd6a99cb5ac2c0e1"
         );
         assert_eq!(value["execution"]["cpu_f32"], "validated");
-        assert_eq!(value["execution"]["cuda"], "planned");
+        assert_eq!(value["execution"]["cuda"], "unsupported");
     }
 
     #[test]

@@ -87,7 +87,7 @@ pub struct DashboardState {
     pub tensor_parallel: usize,
     /// Pipeline-parallel group size.
     pub pipeline_parallel: usize,
-    /// Expert-parallel group size.
+    /// Expert dimension size; always one in supported execution.
     pub expert_parallel: usize,
     /// Selected native all-reduce, when TP is active.
     pub all_reduce: Option<String>,

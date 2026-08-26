@@ -68,6 +68,6 @@ Candle sources used through narrow compatibility overrides and is outside this c
 
 ## Scope
 
-These guides describe behavior implemented through `v0.5-tensor`. Future parallelism
-checkpoints are listed in the root [README](../README.md#release-checkpoints), but their designs
-are not presented here as implemented behavior.
+These guides describe the complete implemented scope through `v0.5-tensor`. The project stops at
+that checkpoint; the root [README](../README.md#release-checkpoints) lists only released,
+reproducible repository states.

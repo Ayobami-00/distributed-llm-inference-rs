@@ -122,8 +122,6 @@ impl FromStr for PlanDType {
 pub enum ExecutionSupport {
     /// The combination has passed release acceptance tests.
     Validated,
-    /// The combination is represented in the roadmap but cannot execute yet.
-    Planned,
     /// The combination is intentionally not supported.
     Unsupported,
 }
@@ -306,7 +304,7 @@ static SUPPORTED_MODELS: [ModelSpec; 2] = [
         },
         prompt_template: PromptTemplate::SmolChatMl,
         cpu_support: ExecutionSupport::Validated,
-        cuda_support: ExecutionSupport::Planned,
+        cuda_support: ExecutionSupport::Unsupported,
     },
     ModelSpec {
         id: SupportedModelId::TinyLlama1_1BChat,
@@ -333,7 +331,7 @@ static SUPPORTED_MODELS: [ModelSpec; 2] = [
         },
         prompt_template: PromptTemplate::TinyLlamaChat,
         cpu_support: ExecutionSupport::Validated,
-        cuda_support: ExecutionSupport::Planned,
+        cuda_support: ExecutionSupport::Unsupported,
     },
 ];
 

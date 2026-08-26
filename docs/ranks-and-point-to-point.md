@@ -1,6 +1,7 @@
 # Ranks and point-to-point communication
 
-`v0.2-collectives` introduces the communication boundary used by later parallel inference work.
+`v0.2-collectives` introduces the communication boundary reused by the `v0.3-tcp`,
+`v0.4-pipeline`, and `v0.5-tensor` checkpoints.
 It intentionally stops at tensor `send` and `recv`: there is no barrier, collective algorithm,
 network transport, or distributed model execution yet.
 
@@ -57,7 +58,7 @@ both ends. `TcpTransport` serializes the same packet contract without changing c
 
 Candle tensors may share storage internally. Sending the tensor object itself through a Rust
 channel would let two logical ranks retain references to the same process memory. That would not
-model the ownership boundary required when ranks later become separate processes.
+model the ownership boundary used when ranks become separate processes in `v0.3-tcp`.
 
 `TensorPacket::from_tensor` therefore records:
 

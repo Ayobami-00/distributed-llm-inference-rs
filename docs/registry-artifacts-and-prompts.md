@@ -31,7 +31,7 @@ The specification contains four categories of information:
 | Identity | ID, repository, revision, weight filename | Artifact resolution and reports |
 | Integrity | parameter count, checkpoint bytes, dtype, tensor layout | Checkpoint validation |
 | Architecture | `ModelConfig` | Memory formulas, tensor shapes, model construction |
-| Execution policy | chat template, CPU/CUDA support | Prompt rendering and request rejection |
+| Execution policy | chat template, validated CPU support, unsupported CUDA state | Prompt rendering and request rejection |
 
 `ModelConfig::head_dim` validates both `H % Q == 0` and `Q % K == 0`. The first makes heads a
 well-defined shape; the second makes grouped-query sharing an integer number of query heads per KV

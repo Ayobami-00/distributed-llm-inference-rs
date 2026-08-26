@@ -31,8 +31,8 @@ impl fmt::Display for StopReason {
 
 /// Parallel topology identity captured in every generation report.
 ///
-/// v0.1 serializes the single-rank baseline explicitly so later reports can preserve the same
-/// conceptual fields.
+/// v0.1 serializes the single-rank baseline explicitly; distributed reports retain the same
+/// conceptual fields through the final `v0.5-tensor` checkpoint.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TopologyReport {
     /// Number of participating ranks; `1` in v0.1.
@@ -43,7 +43,7 @@ pub struct TopologyReport {
     pub tensor_parallel: usize,
     /// Pipeline-parallel group size; `1` in v0.1.
     pub pipeline_parallel: usize,
-    /// Expert-parallel group size; `1` in v0.1.
+    /// Expert dimension size; always `1` in supported execution.
     pub expert_parallel: usize,
 }
 
